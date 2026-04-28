@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalkBI 产品需求文档 v1.3</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #4f46e5; /* 靛蓝色 */
+            --text-color: #333;
+            --bg-color: #f8fafc;
+            --border-color: #e2e8f0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+        }
+        .toc {
+            width: 250px;
+            background: white;
+            padding: 20px;
+            height: 100vh;
+            position: fixed;
+            overflow-y: auto;
+            border-right: 1px solid var(--border-color);
+            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+        }
+        .toc ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .toc li {
+            margin-bottom: 10px;
+        }
+        .toc a {
+            text-decoration: none;
+            color: #475569;
+            font-size: 0.95rem;
+            transition: color 0.2s;
+        }
+        .toc a:hover {
+            color: var(--primary-color);
+        }
+        .content {
+            margin-left: 290px;
+            padding: 40px;
+            max-width: 1200px;
+            background: white;
+            min-height: 100vh;
+            box-shadow: 0 0 10px rgba(0,0,0,0.05);
+        }
+        h1 { font-size: 2.5rem; border-bottom: 2px solid var(--primary-color); padding-bottom: 10px; margin-bottom: 30px; }
+        h2 { font-size: 1.8rem; margin-top: 40px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; }
+        h3 { font-size: 1.4rem; margin-top: 25px; color: #1e293b; }
+        h4 { font-size: 1.1rem; margin-top: 20px; color: #334155; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #f1f5f9;
+            font-weight: 600;
+        }
+        .version-selector {
+            position: absolute;
+            top: 40px;
+            right: 40px;
+        }
+        select {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background-color: #eff6ff;
+            color: #1e40af;
+            font-weight: bold;
+        }
+        .highlight {
+            background-color: #eff6ff;
+            padding: 15px;
+            border-left: 4px solid var(--primary-color);
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        .version-badge {
+            background-color: #dbeafe;
+            color: #1e40af;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            margin-left: 10px;
+            vertical-align: middle;
+        }
+        
+        /* 模块化布局样式 */
+        .feature-module {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin: 30px 0;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+        }
+        .feature-module h3 {
+            margin: 0;
+            padding: 15px 20px;
+            background-color: #f8fafc;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+        }
+        .feature-content {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+        }
+        .logic-rules {
+            flex: 1;
+            min-width: 400px;
+        }
+        .sandbox-preview {
+            flex: 1.5;
+            background: #f1f5f9;
+            border-radius: 8px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+        }
+        .sandbox-preview iframe {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: white;
+            box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+        }
+        .sandbox-label {
+            font-size: 0.85rem;
+            color: #475569;
+            text-align: center;
+            margin-bottom: 10px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }
+        
+        /* 警告横幅 */
+        .alert-banner {
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            padding: 10px 15px;
+            margin-bottom: 20px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            color: #92400e;
+        }
+    </style>
+</head>
+<body>
+
+<nav class="toc">
+    <h3>目录</h3>
+    <ul>
+        <li><a href="#info">项目信息与版本记录</a></li>
+        <li><a href="#background">一、需求背景</a></li>
+        <li><a href="#goals">二、需求目标</a></li>
+        <li><a href="#users">三、用户与使用场景</a></li>
+        <li><a href="#features">四、需求功能清单</a></li>
+        <li><a href="#details">五、详细方案 (含原型沙盒)</a></li>
+        <li><a href="#flowcharts">六、业务流程图</a></li>
+        <li><a href="#exceptions">七、异常与边界处理</a></li>
+        <li><a href="#roadmap">八、未来演进规划</a></li>
+    </ul>
+</nav>
+
+<main class="content">
+    <div class="version-selector">
+        <select onchange="window.location.href=this.value">
+            <option value="prd_v1.3.html" selected>v1.3 (当前版本)</option>
+            <option value="prd_v1.2.html">v1.2 (历史版本)</option>
+            <option value="prd_v1.1.html">v1.1 (历史版本)</option>
+            <option value="prd_v1.0.html">v1.0 (历史版本)</option>
+        </select>
+    </div>
+
+    <h1>TalkBI 产品需求文档 <span class="version-badge">v1.3</span></h1>
+
+    <div class="alert-banner">
+        <strong>💡 v1.3 更新提示：</strong>本次迭代优化了管理员菜单结构，将“数据源连接”更名为“数据源管理”，将“主题库配置”更名为“主题库管理”。同时，将 Excel 上传功能整合进数据源管理中，作为与数据库同等地位的数据源类型。
+    </div>
+
+    <section id="info">
+        <h2>项目信息与版本记录</h2>
+        <table>
+            <tr>
+                <th>项目名称</th>
+                <td>TalkBI (对话式商业智能平台)</td>
+                <th>产品经理</th>
+                <td>AI PM</td>
+            </tr>
+            <tr>
+                <th>当前版本</th>
+                <td>v1.3</td>
+                <th>更新日期</th>
+                <td>2026-04-27</td>
+            </tr>
+        </table>
+        
+        <h3>版本历史</h3>
+        <table>
+            <tr>
+                <th>版本号</th>
+                <th>更新日期</th>
+                <th>更新内容</th>
+                <th>状态</th>
+            </tr>
+            <tr style="background-color: #f8fafc;">
+                <td><strong>v1.3</strong></td>
+                <td><strong>2026-04-27</strong></td>
+                <td><strong>1. 管理员菜单文案精简优化<br>2. 将 Excel 上传整合至数据源管理中<br>3. 移除多余的“接入新数据源”独立菜单项</strong></td>
+                <td><strong>当前</strong></td>
+            </tr>
+            <tr>
+                <td>v1.2</td>
+                <td>2026-04-27</td>
+                <td>业务端支持多选主题库；管理员端新增数据源连接列表与主题库语义配置。</td>
+                <td>归档</td>
+            </tr>
+            <tr>
+                <td>v1.1</td>
+                <td>2026-04-27</td>
+                <td>新增管理员视图原型；新增图表库拖拽至仪表盘交互；更新 iframe 切片路径。</td>
+                <td>归档</td>
+            </tr>
+            <tr>
+                <td>v1.0</td>
+                <td>2026-04-27</td>
+                <td>初始版本：确立核心业务流程、对话生成图表、图表库管理等基础框架</td>
+                <td>归档</td>
+            </tr>
+        </table>
+    </section>
+
+    <section id="background">
+        <h2>一、需求背景</h2>
+        <div class="highlight">
+            <p><strong>现状痛点：</strong>在交通管理行业，业务人员日常需要进行大量的数据分析工作。但由于他们不懂技术，无法直接操作数据库。目前的流程是：业务人员提需求 -> 技术人员连接数据源 -> 创建数据模型/数据集 -> 生成图表。这个流程链路长、沟通成本高、响应速度慢，导致业务人员无法实现“所想即所得”的自助式分析。</p>
+            <p><strong>为什么现在做：</strong>随着大语言模型（LLM）技术的发展，通过自然语言转化为 SQL 并生成图表（Text-to-SQL/Chart）的技术已经成熟。我们需要一款对标 FineBI/DataEase 企业级严谨性，但交互门槛极低的产品，释放技术团队压力，赋能业务人员。</p>
+        </div>
+    </section>
+
+    <section id="goals">
+        <h2>二、需求目标</h2>
+        <table>
+            <tr>
+                <th>目标类型</th>
+                <th>描述</th>
+                <th>衡量指标</th>
+                <th>目标值</th>
+            </tr>
+            <tr>
+                <td>用户体验</td>
+                <td>降低业务人员获取数据图表的门槛</td>
+                <td>业务人员独立生成图表的平均耗时</td>
+                <td>从“天”级缩短至“分钟”级</td>
+            </tr>
+            <tr>
+                <td>业务效率</td>
+                <td>减少技术团队在基础数据提取上的工作量</td>
+                <td>技术团队接到的常规取数需求数量</td>
+                <td>下降 70%</td>
+            </tr>
+            <tr>
+                <td>系统能力</td>
+                <td>提供安全、灵活的对话式分析能力</td>
+                <td>支持的数据源类型及私有化模型响应成功率</td>
+                <td>支持5+种数据源，SQL生成准确率>85%</td>
+            </tr>
+        </table>
+    </section>
+
+    <section id="users">
+        <h2>三、用户与使用场景</h2>
+        <h3>3.1 核心用户角色</h3>
+        <ul>
+            <li><strong>业务人员（主要使用者）：</strong>不懂 SQL，熟悉交通管理业务指标。需要快速查看数据趋势、生成报告。</li>
+            <li><strong>系统管理员/技术人员（支撑者）：</strong>负责配置数据源（MySQL, Doris, PgSQL, Oracle, Excel 等），划分主题库，处理 AI 无法解决的复杂异常查询。</li>
+        </ul>
+
+        <h3>3.2 核心用户旅程 (User Journey Map)</h3>
+        <table>
+            <tr>
+                <th>阶段</th>
+                <th>用户触点</th>
+                <th>用户行为</th>
+                <th>痛点/情绪</th>
+                <th>产品机会点 (TalkBI 解决方案)</th>
+            </tr>
+            <tr>
+                <td>1. 准备阶段</td>
+                <td>首页/主题库列表</td>
+                <td>选择需要分析的“主题库”（如：交通流量主题、违章记录主题）</td>
+                <td>不知道去哪里找数据 (😐)</td>
+                <td>管理员预置主题库，用户只需做单选题；支持跨主题联合查询。</td>
+            </tr>
+            <tr>
+                <td>2. 探索阶段</td>
+                <td>对话框界面</td>
+                <td>输入自然语言（例：“帮我统计上个月各个路口的拥堵指数”），与 AI 交互</td>
+                <td>不知道怎么描述需求，怕 AI 听不懂 (😟)</td>
+                <td>AI 在主题库范围内自动决策查哪些表；提供示例提问引导。</td>
+            </tr>
+            <tr>
+                <td>3. 结果验证</td>
+                <td>图表展示区</td>
+                <td>查看 AI 生成的图表和底层数据逻辑</td>
+                <td>生成的图表类型不是我想要的，或者颜色不好看 (🤔)</td>
+                <td>提供“视觉层”和“数据逻辑层”的双重二次编辑能力，所见即所得。</td>
+            </tr>
+            <tr>
+                <td>4. 沉淀分享</td>
+                <td>图表库/仪表盘</td>
+                <td>将满意的图表保存到个人文件夹，分享给同事，或组装成仪表盘</td>
+                <td>做完的图表下次找不到了，无法给领导汇报 (😞)</td>
+                <td>建立个人图表库，支持分享链接，支持多图表拼接为 Dashboard。</td>
+            </tr>
+        </table>
+    </section>
+
+    <section id="features">
+        <h2>四、需求功能清单</h2>
+        <table>
+            <tr>
+                <th>模块</th>
+                <th>功能点</th>
+                <th>描述</th>
+                <th>优先级</th>
+            </tr>
+            <tr>
+                <td rowspan="2">数据准备 (管理员端)</td>
+                <td>数据源管理</td>
+                <td>统一管理 MySQL, Doris 等数据库连接，以及上传的 Excel 文件数据源</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td>主题库管理</td>
+                <td>将多张相关表打包成一个“主题库”，配置字段中文别名，限定 AI 搜索范围</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td rowspan="4">对话分析 (业务端)</td>
+                <td>多主题库选择</td>
+                <td>用户在对话前可多选主题库，支持跨主题联合分析</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td>自然语言对话</td>
+                <td>输入问题，调用私有化大模型生成 SQL 并返回图表</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td>图表二次编辑 (视觉)</td>
+                <td>修改图表类型（柱、折、饼等）、颜色、标题、图例等</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td>数据逻辑编辑</td>
+                <td>修改维度、度量，或直接查看/编辑底层 SQL</td>
+                <td>P1</td>
+            </tr>
+            <tr>
+                <td rowspan="2">资产管理</td>
+                <td>个人图表库</td>
+                <td>保存生成的图表至个人文件夹，支持重命名、分类、分享</td>
+                <td>P0</td>
+            </tr>
+            <tr>
+                <td>仪表盘搭建</td>
+                <td>将图表库中的多个图表拖拽组合成 Dashboard</td>
+                <td>P1</td>
+            </tr>
+            <tr>
+                <td>异常流转</td>
+                <td>工单/求助机制</td>
+                <td>当 AI 连续 10 轮无法解决问题时，一键将上下文流转给后台技术人员排查</td>
+                <td>P1</td>
+            </tr>
+        </table>
+    </section>
+
+    <section id="details">
+        <h2>五、详细方案</h2>
+        
+        <!-- 模块1：多主题联合分析 -->
+        <div class="feature-module">
+            <h3>功能 1：多主题库联合分析 (跨库查询)</h3>
+            <div class="feature-content">
+                <div class="logic-rules">
+                    <h4>交互流程图</h4>
+                    <div class="mermaid">
+                        flowchart TD
+                        A[点击顶部主题库下拉框] --> B[勾选多个主题库]
+                        B --> C[如: 交通流量 + 违章事故]
+                        C --> D[输入跨主题问题]
+                        D --> E[AI识别关联字段(如:行政区)]
+                        E --> F[生成包含 JOIN 的 SQL]
+                        F --> G[渲染散点图等关联图表]
+                    </div>
+                    <h4>规则描述</h4>
+                    <ul>
+                        <li><strong>多选交互</strong>: 顶部的“当前分析范围”改为多选下拉框。用户可以同时勾选多个主题库。</li>
+                        <li><strong>跨主题查询</strong>: 当选中多个主题时，AI 会尝试寻找两个主题之间的共同维度（例如“行政区”或“时间”），并生成 `JOIN` 语句。</li>
+                        <li><strong>图表推荐</strong>: 对于涉及两个度量（如拥堵指数、事故数量）的跨主题查询，系统优先推荐“散点图”或“双轴折线图”以展示相关性。</li>
+                    </ul>
+                </div>
+                <div class="sandbox-preview">
+                    <div class="sandbox-label">🔍 专注模式沙盒：多主题联合分析 (业务端)</div>
+                    <iframe src="../prototype/prototype_v1.3.html?focus=chat-multi" sandbox="allow-scripts allow-same-origin"></iframe>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块2：管理员视图 - 数据源管理 -->
+        <div class="feature-module">
+            <h3><span class="version-badge">v1.3 更新</span> 功能 2：管理员视图 - 数据源管理 (含 Excel)</h3>
+            <div class="feature-content">
+                <div class="logic-rules">
+                    <h4>交互流程图</h4>
+                    <div class="mermaid">
+                        flowchart TD
+                        A[管理员进入'数据源管理'] --> B{选择接入方式}
+                        B -->|接入数据库| C[输入IP/账号等信息]
+                        B -->|上传 Excel| D[上传本地文件]
+                        C --> E[测试并保存]
+                        D --> F[后台解析为临时表]
+                        E --> G[统一在数据源列表中展示]
+                        F --> G
+                    </div>
+                    <h4>规则描述</h4>
+                    <ul>
+                        <li><strong>统一管理</strong>: 无论是物理数据库（MySQL/Doris）还是本地上传的 Excel 文件，都作为平级的数据源在列表中统一管理。</li>
+                        <li><strong>Excel 解析</strong>: 上传 Excel 后，系统会自动将其解析为一张虚拟的数据表，并展示在列表中。</li>
+                        <li><strong>状态监控</strong>: 列表展示各数据源的连接状态、文件大小和最后同步时间。</li>
+                    </ul>
+                </div>
+                <div class="sandbox-preview">
+                    <div class="sandbox-label">🔍 专注模式沙盒：数据源管理 (管理员端)</div>
+                    <iframe src="../prototype/prototype_v1.3.html?focus=admin-source" sandbox="allow-scripts allow-same-origin"></iframe>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模块3：管理员视图 - 主题库管理(语义层) -->
+        <div class="feature-module">
+            <h3><span class="version-badge">v1.3 更新</span> 功能 3：管理员视图 - 主题库管理(语义层)</h3>
+            <div class="feature-content">
+                <div class="logic-rules">
+                    <h4>交互流程图</h4>
+                    <div class="mermaid">
+                        flowchart TD
+                        A[新建/编辑主题库] --> B[步骤1: 从数据源选表]
+                        B --> C[勾选需要的物理表或Excel表]
+                        C --> D[步骤2: 字段语义配置]
+                        D --> E[为英文字段添加中文别名]
+                        E --> F[隐藏不需要的系统字段]
+                        F --> G[保存主题库发布]
+                    </div>
+                    <h4>规则描述</h4>
+                    <ul>
+                        <li><strong>选表逻辑</strong>: 主题库是一个虚拟的集合。管理员可以从已连接的数据源（包括 Excel）中，挑选出业务相关的表组成一个主题。</li>
+                        <li><strong>语义映射 (核心)</strong>: 物理表中的字段往往是英文（如 `status_code`），管理员必须为其配置中文别名（如“设备状态”），这样 AI 才能听懂业务人员的自然语言提问。</li>
+                        <li><strong>字段隐藏</strong>: 诸如 `internal_ip` 或 `id` 等技术字段，可以配置为“不可见”，避免干扰 AI 解析。</li>
+                    </ul>
+                </div>
+                <div class="sandbox-preview">
+                    <div class="sandbox-label">🔍 专注模式沙盒：主题库选表与语义配置 (管理员端)</div>
+                    <iframe src="../prototype/prototype_v1.3.html?focus=admin-theme-edit" sandbox="allow-scripts allow-same-origin"></iframe>
+                </div>
+            </div>
+        </div>
+
+    </section>
+
+    <section id="flowcharts">
+        <h2>六、业务流程图 (全局)</h2>
+        <div class="mermaid">
+            flowchart TD
+            A[业务人员进入 TalkBI] --> B[选择一个或多个主题库]
+            
+            B --> F[在对话框输入自然语言问题]
+            F --> G[私有化大模型解析意图]
+            G --> H{是否能理解并匹配字段?}
+            
+            H -->|是| I[生成 SQL 并在限定库内执行]
+            I --> J{执行是否成功?}
+            
+            J -->|是| K[返回数据结果并推荐图表类型]
+            K --> L[前端渲染图表及数据逻辑面板]
+            
+            L --> M{用户操作}
+            M -->|满意| N[保存到个人图表库 / 组装仪表盘]
+            M -->|修改视觉| O[切换图表类型/颜色/标题]
+            M -->|修改逻辑| P[调整维度/度量/筛选条件]
+            O --> L
+            P --> I
+            
+            H -->|否| Q[返回异常提示: 字段未找到或意图不明]
+            J -->|否| Q
+            
+            Q --> R{连续失败次数 >= 10次?}
+            R -->|否| S[引导用户换种说法重试]
+            S --> F
+            R -->|是| T[提示: AI无法解决, 建议联系管理员]
+            T --> U[用户点击'联系管理员']
+            U --> V[打包对话上下文生成后台排查工单]
+            V --> W[管理员后台接单处理]
+        </div>
+    </section>
+
+    <section id="exceptions">
+        <h2>七、异常与边界处理</h2>
+        <ul>
+            <li><strong>跨主题联合查询失败：</strong>如果用户选择了两个毫无关联的主题库（例如“违章记录”和“食堂采购”），AI 无法找到公共维度进行 JOIN，此时应直接提示用户：“这两个主题库之间缺乏关联字段，无法进行联合分析”。</li>
+            <li><strong>数据权限越界：</strong>AI 生成的 SQL 只能在用户当前选定的“主题库”范围内执行，禁止跨库/跨主题查询未授权表。</li>
+            <li><strong>Excel 联合查询性能：</strong>对于用户上传的极大 Excel 文件，需限制文件大小（如 50MB），并在后台进行临时表构建以保证查询性能。</li>
+        </ul>
+    </section>
+
+    <section id="roadmap">
+        <h2>八、未来演进规划</h2>
+        <ul>
+            <li>v1.0：实现核心的对话生成图表、图表库管理、基础仪表盘。</li>
+            <li>v1.1：完善管理员后台视图与仪表盘拖拽交互。</li>
+            <li>v1.2：支持多主题库联合查询，细化管理员数据源与语义层配置。</li>
+            <li>v1.3：优化管理员菜单，将 Excel 整合为标准数据源。</li>
+            <li>v2.0：引入更高级的 AI 数据洞察（不仅生成图表，还生成文字分析结论），支持更复杂的权限管控（行列级权限）。</li>
+        </ul>
+    </section>
+
+</main>
+
+<script>
+    mermaid.initialize({ startOnLoad: true, theme: 'neutral' });
+</script>
+</body>
+</html>

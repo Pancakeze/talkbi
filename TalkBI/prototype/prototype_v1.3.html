@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalkBI - 原型 v1.3</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .chat-container { height: calc(100vh - 140px); }
+        .chart-placeholder { background: linear-gradient(135deg, #f3f4f6 25%, transparent 25%) -50px 0, linear-gradient(225deg, #f3f4f6 25%, transparent 25%) -50px 0, linear-gradient(315deg, #f3f4f6 25%, transparent 25%), linear-gradient(45deg, #f3f4f6 25%, transparent 25%); background-size: 100px 100px; background-color: #ffffff; }
+        
+        /* Focus Mode Styles */
+        .sandbox-focus .non-focus {
+            opacity: 0.3;
+            pointer-events: none;
+            filter: grayscale(100%);
+        }
+
+        /* 拖拽占位符样式 */
+        .drag-over { border: 2px dashed #3b82f6 !important; background-color: #eff6ff !important; }
+        
+        /* 自定义多选下拉框样式 */
+        .multi-select-dropdown { display: none; }
+        .multi-select-dropdown.active { display: block; }
+        
+        /* 模态框样式 */
+        .modal-overlay { background-color: rgba(0, 0, 0, 0.5); }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 h-screen overflow-hidden flex">
+
+    <!-- Sidebar (图表库 & 历史) -->
+    <aside class="w-64 bg-white border-r border-gray-200 flex flex-col transition-all duration-300" id="sidebar">
+        <!-- Role Switcher (For Demo Purposes) -->
+        <div class="bg-indigo-600 text-white p-2 text-xs flex justify-between items-center cursor-pointer" onclick="toggleRole()" title="点击切换角色">
+            <span id="role-indicator"><i class="fas fa-user-tie mr-1"></i> 业务人员视图</span>
+            <i class="fas fa-exchange-alt"></i>
+        </div>
+
+        <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+            <div class="font-bold text-xl text-blue-600"><i class="fas fa-chart-pie mr-2"></i>TalkBI</div>
+            <button class="text-gray-400 hover:text-gray-600"><i class="fas fa-bars"></i></button>
+        </div>
+        
+        <!-- 业务人员菜单 -->
+        <div id="menu-business" class="flex-1 flex flex-col overflow-hidden">
+            <div class="p-4">
+                <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg flex items-center justify-center transition-colors shadow-sm" onclick="switchPage('chat')">
+                    <i class="fas fa-plus mr-2"></i> 新建分析
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto">
+                <div class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider mt-2">我的资产</div>
+                <nav class="mt-1">
+                    <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600 rounded-r-full mr-2 transition-colors" onclick="switchPage('dashboard')">
+                        <i class="fas fa-columns w-5 text-center mr-2 text-indigo-500"></i> 仪表盘 (2)
+                    </a>
+                    <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600 rounded-r-full mr-2 transition-colors" onclick="switchPage('library')">
+                        <i class="fas fa-folder w-5 text-center mr-2 text-yellow-500"></i> 个人图表库 (15)
+                    </a>
+                </nav>
+
+                <div class="px-4 py-2 mt-6 text-xs font-semibold text-gray-400 uppercase tracking-wider">历史对话</div>
+                <nav class="mt-1">
+                    <a href="#" class="flex items-center px-4 py-2 text-gray-600 hover:bg-gray-100 text-sm truncate rounded-r-full mr-2">
+                        <i class="far fa-comment-alt mr-2 text-gray-400"></i> 昨天 - 拥堵与事故关联分析
+                    </a>
+                    <a href="#" class="flex items-center px-4 py-2 text-gray-600 hover:bg-gray-100 text-sm truncate rounded-r-full mr-2">
+                        <i class="far fa-comment-alt mr-2 text-gray-400"></i> 04/25 - 事故多发路段排查
+                    </a>
+                </nav>
+            </div>
+            
+            <div class="p-4 border-t border-gray-200 flex items-center bg-gray-50">
+                <div class="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold mr-3 shadow-sm">交</div>
+                <div class="text-sm">
+                    <div class="font-medium text-gray-800">交管局-李警官</div>
+                    <div class="text-gray-500 text-xs">业务分析员</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 管理员菜单 (默认隐藏) -->
+        <div id="menu-admin" class="flex-1 flex flex-col overflow-hidden hidden bg-gray-800 text-gray-300">
+            <div class="flex-1 overflow-y-auto mt-4">
+                <div class="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider mt-2">数据管理</div>
+                <nav class="mt-1">
+                    <a href="#" id="nav-admin-theme" class="flex items-center px-4 py-2 text-gray-200 hover:bg-gray-700 hover:text-white rounded-r-full mr-2 transition-colors bg-gray-700 border-l-4 border-indigo-500" onclick="switchPage('admin-theme')">
+                        <i class="fas fa-layer-group w-5 text-center mr-2 text-indigo-400"></i> 主题库管理
+                    </a>
+                    <a href="#" id="nav-admin-source" class="flex items-center px-4 py-2 text-gray-300 hover:bg-gray-700 hover:text-white rounded-r-full mr-2 transition-colors" onclick="switchPage('admin-source')">
+                        <i class="fas fa-server w-5 text-center mr-2 text-green-400"></i> 数据源管理 (6)
+                    </a>
+                </nav>
+
+                <div class="px-4 py-2 mt-6 text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between items-center">
+                    <span>运维中心</span>
+                    <span class="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full">3 待办</span>
+                </div>
+                <nav class="mt-1">
+                    <a href="#" id="nav-admin-tickets" class="flex items-center px-4 py-2 text-gray-300 hover:bg-gray-700 hover:text-white text-sm truncate rounded-r-full mr-2" onclick="switchPage('admin-tickets')">
+                        <i class="fas fa-ticket-alt mr-2 text-red-400"></i> AI 异常求助工单
+                    </a>
+                    <a href="#" class="flex items-center px-4 py-2 text-gray-300 hover:bg-gray-700 hover:text-white text-sm truncate rounded-r-full mr-2">
+                        <i class="fas fa-history mr-2 text-gray-400"></i> 查询审计日志
+                    </a>
+                </nav>
+            </div>
+            
+            <div class="p-4 border-t border-gray-700 flex items-center bg-gray-900">
+                <div class="w-8 h-8 rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold mr-3 shadow-sm"><i class="fas fa-shield-alt"></i></div>
+                <div class="text-sm">
+                    <div class="font-medium text-white">系统管理员</div>
+                    <div class="text-gray-400 text-xs">Admin</div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col bg-white relative overflow-hidden">
+        
+        <!-- PAGE 1: Chat Analysis (Default) -->
+        <div id="page-chat" class="flex-1 flex flex-col h-full">
+            <!-- Header: Theme Selection (Multi-select) -->
+            <header class="h-16 border-b border-gray-200 flex items-center justify-between px-6 bg-white z-20" id="header-theme">
+                <div class="flex items-center">
+                    <span class="text-gray-500 mr-3">当前分析范围:</span>
+                    
+                    <!-- 多选主题库组件 -->
+                    <div class="relative" id="theme-selector-container">
+                        <div class="bg-gray-50 border border-gray-300 text-gray-700 py-1.5 pl-3 pr-8 rounded-lg cursor-pointer shadow-sm flex items-center min-w-[200px]" onclick="toggleThemeDropdown()">
+                            <div class="flex-1 flex flex-wrap gap-1" id="selected-themes">
+                                <span class="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded flex items-center">🚦 交通流量 <i class="fas fa-times ml-1 cursor-pointer hover:text-blue-900" onclick="event.stopPropagation(); removeTheme(this)"></i></span>
+                                <span class="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded flex items-center">⚠️ 违章事故 <i class="fas fa-times ml-1 cursor-pointer hover:text-red-900" onclick="event.stopPropagation(); removeTheme(this)"></i></span>
+                            </div>
+                            <i class="fas fa-chevron-down text-xs text-gray-400 absolute right-3"></i>
+                        </div>
+                        
+                        <!-- 下拉多选列表 -->
+                        <div class="multi-select-dropdown absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50" id="theme-dropdown">
+                            <div class="p-2 border-b border-gray-100">
+                                <input type="text" placeholder="搜索主题库..." class="w-full text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:border-blue-500">
+                            </div>
+                            <ul class="max-h-48 overflow-y-auto py-1">
+                                <li class="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center">
+                                    <input type="checkbox" class="mr-2 rounded text-blue-600" checked>
+                                    <span class="text-sm">🚦 交通流量主题库</span>
+                                </li>
+                                <li class="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center">
+                                    <input type="checkbox" class="mr-2 rounded text-blue-600" checked>
+                                    <span class="text-sm">⚠️ 违章事故主题库</span>
+                                </li>
+                                <li class="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center">
+                                    <input type="checkbox" class="mr-2 rounded text-blue-600">
+                                    <span class="text-sm">👮 警力调度主题库</span>
+                                </li>
+                                <li class="px-3 py-2 hover:bg-gray-50 cursor-pointer flex items-center">
+                                    <input type="checkbox" class="mr-2 rounded text-blue-600">
+                                    <span class="text-sm">🚗 车辆注册主题库</span>
+                                </li>
+                            </ul>
+                            <div class="p-2 border-t border-gray-100 text-xs text-gray-500 text-center">
+                                <i class="fas fa-link text-blue-500 mr-1"></i> 已选 2 个主题，支持跨主题联合分析
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4 text-gray-500">
+                    <button class="hover:text-gray-800 transition-colors"><i class="fas fa-redo-alt"></i> 清空对话</button>
+                </div>
+            </header>
+
+            <!-- Chat Area -->
+            <div class="flex-1 flex overflow-hidden">
+                
+                <!-- Left: Conversation -->
+                <div class="w-1/2 flex flex-col border-r border-gray-200 shadow-[2px_0_10px_rgba(0,0,0,0.02)] z-10" id="chat-panel">
+                    <!-- Messages -->
+                    <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50" id="message-container">
+                        
+                        <!-- AI Greeting -->
+                        <div class="flex items-start">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1 shadow-md">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm max-w-[85%]">
+                                <p class="text-gray-800 mb-2">您好，李警官！我是 TalkBI 助手。当前已连接 <strong>交通流量</strong> 和 <strong>违章事故</strong> 2个主题库。</p>
+                                <p class="text-gray-600">您可以进行跨主题联合分析，例如：</p>
+                                <ul class="mt-2 space-y-1 text-blue-600">
+                                    <li class="cursor-pointer hover:underline"><i class="fas fa-magic text-yellow-400 mr-1 text-xs"></i> "帮我分析上个月各区【拥堵指数】与【追尾事故数量】的相关性，用散点图展示"</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- User Message -->
+                        <div class="flex items-start flex-row-reverse" id="msg-user" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold flex-shrink-0 mt-1 ml-3 shadow-sm border border-blue-200">交</div>
+                            <div class="bg-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-md text-sm max-w-[85%]">
+                                帮我分析上个月各区【拥堵指数】与【追尾事故数量】的相关性。
+                            </div>
+                        </div>
+
+                        <!-- AI Loading -->
+                        <div class="flex items-start" id="msg-loading" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1 shadow-md">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm flex items-center text-gray-500">
+                                <i class="fas fa-circle-notch fa-spin mr-2 text-blue-600"></i> 正在跨主题库构建联合查询模型...
+                            </div>
+                        </div>
+
+                        <!-- AI Response (Success) -->
+                        <div class="flex items-start" id="msg-success" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1 shadow-md">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm max-w-[95%]">
+                                <p class="text-gray-800 mb-3">已为您生成散点图。数据显示，<strong>拥堵指数越高的区域（如朝阳区），追尾事故数量也呈正相关上升趋势</strong>。</p>
+                                <div class="bg-gray-50 rounded-lg border border-gray-200 p-3 mb-3">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="text-xs text-gray-500 font-mono"><i class="fas fa-link mr-1 text-purple-500"></i> 跨主题联合查询逻辑</span>
+                                        <button class="text-xs text-blue-600 hover:text-blue-800 font-medium" onclick="toggleSQL()">查看SQL</button>
+                                    </div>
+                                    <div class="text-xs text-gray-700 flex flex-wrap gap-2">
+                                        <span class="bg-blue-50 px-2 py-1 rounded border border-blue-100 shadow-sm"><span class="text-gray-400">维度:</span> 行政区</span>
+                                        <span class="bg-green-50 px-2 py-1 rounded border border-green-100 shadow-sm"><span class="text-gray-400">度量1 (流量库):</span> AVG(拥堵指数)</span>
+                                        <span class="bg-red-50 px-2 py-1 rounded border border-red-100 shadow-sm"><span class="text-gray-400">度量2 (事故库):</span> COUNT(追尾事故)</span>
+                                    </div>
+                                    <div id="sql-code" class="mt-3 p-3 bg-gray-800 text-green-400 font-mono text-xs rounded-md hidden overflow-x-auto shadow-inner">
+                                        <span class="text-pink-400">SELECT</span> t.district_name, <span class="text-pink-400">AVG</span>(t.congestion_index) <span class="text-pink-400">as</span> avg_index, <span class="text-pink-400">COUNT</span>(a.accident_id) <span class="text-pink-400">as</span> accident_count <br>
+                                        <span class="text-pink-400">FROM</span> traffic_flow_monthly t <br>
+                                        <span class="text-pink-400">LEFT JOIN</span> accident_records a <span class="text-pink-400">ON</span> t.district_id = a.district_id <br>
+                                        <span class="text-pink-400">WHERE</span> t.record_month = <span class="text-yellow-300">'2026-03'</span> <span class="text-pink-400">AND</span> a.type = <span class="text-yellow-300">'追尾'</span> <br>
+                                        <span class="text-pink-400">GROUP BY</span> t.district_name;
+                                    </div>
+                                </div>
+                                <div class="flex space-x-2">
+                                    <button class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded-lg hover:bg-blue-100 transition-colors font-medium" onclick="showChart()"><i class="fas fa-eye mr-1"></i> 在右侧预览图表</button>
+                                    <button class="text-xs bg-white text-gray-600 border border-gray-200 px-3 py-1.5 rounded-lg hover:bg-gray-50 transition-colors shadow-sm" onclick="saveToLibrary()"><i class="fas fa-save mr-1"></i> 保存</button>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="p-4 bg-white border-t border-gray-200" id="input-area">
+                        <div class="relative flex items-end border border-gray-300 rounded-xl bg-white shadow-[0_2px_8px_rgba(0,0,0,0.04)] focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 overflow-hidden transition-all">
+                            <textarea id="chat-input" rows="2" class="w-full py-3 pl-4 pr-12 bg-transparent border-none focus:ring-0 resize-none text-sm text-gray-800 placeholder-gray-400" placeholder="输入跨主题分析需求..."></textarea>
+                            <button class="absolute right-2 bottom-2 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-sm" onclick="simulateChat()">
+                                <i class="fas fa-paper-plane text-sm"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Chart Preview & Edit -->
+                <div class="w-1/2 bg-gray-50 flex flex-col relative" id="chart-panel">
+                    
+                    <!-- Empty State -->
+                    <div id="chart-empty" class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 z-10 bg-white">
+                        <div class="w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center mb-6 shadow-inner border border-gray-100">
+                            <i class="fas fa-project-diagram text-5xl text-gray-300"></i>
+                        </div>
+                        <p class="text-gray-500 font-medium">支持多主题库联合分析</p>
+                        <p class="text-sm text-gray-400 mt-1">在左侧输入需求，自动生成关联图表</p>
+                    </div>
+
+                    <!-- Chart Content (Hidden initially) -->
+                    <div id="chart-content" class="flex-1 flex flex-col hidden h-full">
+                        <!-- Chart Toolbar -->
+                        <div class="h-14 border-b border-gray-200 flex items-center justify-between px-4 bg-white shadow-sm z-10">
+                            <div class="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+                                <button class="px-3 py-1.5 text-gray-500 hover:text-gray-700 rounded-md text-sm transition-colors" title="柱状图"><i class="fas fa-chart-bar"></i></button>
+                                <button class="px-3 py-1.5 text-gray-500 hover:text-gray-700 rounded-md text-sm transition-colors" title="折线图"><i class="fas fa-chart-line"></i></button>
+                                <button class="px-3 py-1.5 text-blue-600 bg-white rounded-md shadow-sm text-sm font-medium" title="散点图"><i class="fas fa-braille mr-1"></i> 散点图</button>
+                            </div>
+                        </div>
+
+                        <!-- Chart Display Area -->
+                        <div class="flex-1 p-6 overflow-y-auto bg-gray-50">
+                            <div class="bg-white border border-gray-200 rounded-xl shadow-sm p-6 h-full flex flex-col relative">
+                                <div class="flex justify-between items-start mb-6 group">
+                                    <h3 class="text-xl font-bold text-gray-800 border-b-2 border-transparent hover:border-gray-300 cursor-text inline-block pb-1 transition-colors">各区拥堵指数与追尾事故数量相关性分析 <i class="fas fa-pencil-alt text-xs text-gray-400 opacity-0 group-hover:opacity-100 ml-2"></i></h3>
+                                </div>
+                                
+                                <!-- Fake Scatter Chart UI -->
+                                <div class="flex-1 flex items-end justify-around pb-8 pt-4 px-4 border-l border-b border-gray-300 relative mt-4">
+                                    <!-- Y Axis Labels (事故数量) -->
+                                    <div class="absolute left-[-30px] bottom-[20%] text-xs text-gray-500 font-mono">100</div>
+                                    <div class="absolute left-[-30px] bottom-[50%] text-xs text-gray-500 font-mono">200</div>
+                                    <div class="absolute left-[-30px] bottom-[80%] text-xs text-gray-500 font-mono">300</div>
+                                    <div class="absolute -left-10 top-[-20px] text-xs text-gray-400 font-bold">事故数量</div>
+                                    
+                                    <!-- X Axis Labels (拥堵指数) -->
+                                    <div class="absolute right-[-20px] -bottom-6 text-xs text-gray-400 font-bold">拥堵指数</div>
+                                    <div class="absolute left-[20%] -bottom-6 text-xs text-gray-500 font-mono">1.0</div>
+                                    <div class="absolute left-[50%] -bottom-6 text-xs text-gray-500 font-mono">2.0</div>
+                                    <div class="absolute left-[80%] -bottom-6 text-xs text-gray-500 font-mono">3.0</div>
+
+                                    <!-- Grid Lines -->
+                                    <div class="absolute left-0 right-0 bottom-[20%] border-t border-dashed border-gray-200 z-0"></div>
+                                    <div class="absolute left-0 right-0 bottom-[50%] border-t border-dashed border-gray-200 z-0"></div>
+                                    <div class="absolute left-0 right-0 bottom-[80%] border-t border-dashed border-gray-200 z-0"></div>
+
+                                    <!-- Scatter Points -->
+                                    <!-- 朝阳区 (高拥堵, 高事故) -->
+                                    <div class="absolute left-[85%] bottom-[85%] w-4 h-4 bg-red-500 rounded-full opacity-80 cursor-pointer hover:scale-150 transition-transform group shadow-md z-10">
+                                        <div class="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">朝阳区 (3.8, 320)</div>
+                                    </div>
+                                    <!-- 海淀区 -->
+                                    <div class="absolute left-[75%] bottom-[70%] w-4 h-4 bg-orange-500 rounded-full opacity-80 cursor-pointer hover:scale-150 transition-transform group shadow-md z-10">
+                                        <div class="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">海淀区 (3.5, 250)</div>
+                                    </div>
+                                    <!-- 丰台区 -->
+                                    <div class="absolute left-[55%] bottom-[45%] w-4 h-4 bg-yellow-500 rounded-full opacity-80 cursor-pointer hover:scale-150 transition-transform group shadow-md z-10">
+                                        <div class="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">丰台区 (2.8, 180)</div>
+                                    </div>
+                                    <!-- 西城区 -->
+                                    <div class="absolute left-[35%] bottom-[25%] w-4 h-4 bg-green-500 rounded-full opacity-80 cursor-pointer hover:scale-150 transition-transform group shadow-md z-10">
+                                        <div class="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-20">西城区 (2.1, 110)</div>
+                                    </div>
+                                    
+                                    <!-- 趋势线 -->
+                                    <svg class="absolute inset-0 w-full h-full z-0" preserveAspectRatio="none">
+                                        <line x1="20%" y1="90%" x2="90%" y2="10%" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="5,5" />
+                                    </svg>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Data Logic Editor (Bottom Drawer) -->
+                        <div class="h-48 border-t border-gray-200 bg-white flex flex-col shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20">
+                            <div class="px-4 py-2.5 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                                <span class="text-sm font-bold text-gray-700"><i class="fas fa-sliders-h mr-2 text-blue-500"></i> 数据逻辑编辑 (跨主题)</span>
+                            </div>
+                            <div class="flex-1 p-4 flex gap-4 overflow-x-auto bg-white">
+                                <div class="w-56 border border-gray-200 rounded-lg p-3 bg-gray-50 shadow-sm">
+                                    <div class="text-xs text-gray-500 mb-2 font-bold uppercase tracking-wider">维度 (点)</div>
+                                    <div class="bg-white border border-blue-300 rounded-md px-3 py-2 text-sm text-blue-700 flex justify-between items-center shadow-sm">
+                                        <span><i class="fas fa-font text-blue-400 mr-2 text-xs"></i> 行政区</span>
+                                    </div>
+                                </div>
+                                <div class="w-56 border border-gray-200 rounded-lg p-3 bg-gray-50 shadow-sm border-t-2 border-t-blue-400">
+                                    <div class="text-xs text-gray-500 mb-2 font-bold uppercase tracking-wider">X轴 (来自: 交通流量)</div>
+                                    <div class="bg-white border border-gray-300 rounded-md px-3 py-2 text-sm text-gray-700 flex justify-between items-center shadow-sm">
+                                        <span>AVG(拥堵指数)</span>
+                                    </div>
+                                </div>
+                                <div class="w-56 border border-gray-200 rounded-lg p-3 bg-gray-50 shadow-sm border-t-2 border-t-red-400">
+                                    <div class="text-xs text-gray-500 mb-2 font-bold uppercase tracking-wider">Y轴 (来自: 违章事故)</div>
+                                    <div class="bg-white border border-gray-300 rounded-md px-3 py-2 text-sm text-gray-700 flex justify-between items-center shadow-sm">
+                                        <span>COUNT(追尾事故)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PAGE 2: Admin - Data Source (管理员-数据源管理) -->
+        <div id="page-admin-source" class="flex-1 flex-col h-full hidden bg-gray-50">
+            <header class="h-16 border-b border-gray-200 flex items-center justify-between px-6 bg-white shadow-sm z-10">
+                <h2 class="text-xl font-bold text-gray-800">数据源管理</h2>
+                <div class="flex space-x-3">
+                    <button class="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 font-medium shadow-sm transition-colors" onclick="openModal('modal-add-source')"><i class="fas fa-database mr-1"></i> 接入数据库</button>
+                    <button class="px-4 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 font-medium shadow-sm transition-colors"><i class="fas fa-file-excel mr-1"></i> 上传 Excel</button>
+                </div>
+            </header>
+            
+            <div class="p-6 overflow-y-auto flex-1">
+                <!-- 统计卡片 -->
+                <div class="grid grid-cols-4 gap-4 mb-6">
+                    <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-sm flex items-center">
+                        <div class="w-10 h-10 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-lg mr-3"><i class="fas fa-plug"></i></div>
+                        <div><div class="text-xs text-gray-500">已连接数据源</div><div class="text-xl font-bold">6</div></div>
+                    </div>
+                    <div class="bg-white p-4 rounded-lg border border-gray-200 shadow-sm flex items-center">
+                        <div class="w-10 h-10 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-lg mr-3"><i class="fas fa-table"></i></div>
+                        <div><div class="text-xs text-gray-500">已同步数据表</div><div class="text-xl font-bold">129</div></div>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">数据源名称/类型</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">连接地址/文件信息</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">同步状态</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作功能</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-blue-50 border border-blue-100 rounded flex items-center justify-center"><img src="https://upload.wikimedia.org/wikipedia/en/thumb/6/62/MySQL.svg/1200px-MySQL.svg.png" class="h-4 object-contain" alt="MySQL"></div>
+                                        <div class="ml-4">
+                                            <div class="text-sm font-medium text-gray-900">交管核心业务库</div>
+                                            <div class="text-xs text-gray-500">MySQL 8.0</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">10.12.0.45:3306</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800"><i class="fas fa-check-circle mt-0.5 mr-1"></i> 正常</span>
+                                    <div class="text-[10px] text-gray-400 mt-1">最后同步: 10分钟前</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button class="text-indigo-600 hover:text-indigo-900 mr-3" title="编辑连接信息"><i class="fas fa-edit"></i> 编辑</button>
+                                    <button class="text-blue-600 hover:text-blue-900 mr-3" title="手动触发元数据同步"><i class="fas fa-sync-alt"></i> 同步元数据</button>
+                                    <button class="text-gray-600 hover:text-gray-900" title="查看该库下的所有表"><i class="fas fa-list"></i> 表管理</button>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-orange-50 border border-orange-100 rounded flex items-center justify-center"><span class="text-orange-600 font-bold text-xs">Doris</span></div>
+                                        <div class="ml-4">
+                                            <div class="text-sm font-medium text-gray-900">历史流量数仓</div>
+                                            <div class="text-xs text-gray-500">Apache Doris</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">10.12.0.88:9030</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800"><i class="fas fa-check-circle mt-0.5 mr-1"></i> 正常</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button class="text-indigo-600 hover:text-indigo-900 mr-3" title="编辑连接信息"><i class="fas fa-edit"></i> 编辑</button>
+                                    <button class="text-blue-600 hover:text-blue-900 mr-3" title="手动触发元数据同步"><i class="fas fa-sync-alt"></i> 同步元数据</button>
+                                    <button class="text-gray-600 hover:text-gray-900" title="查看该库下的所有表"><i class="fas fa-list"></i> 表管理</button>
+                                </td>
+                            </tr>
+                            <!-- 新增 Excel 数据源展示 -->
+                            <tr class="bg-green-50/30">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-green-100 border border-green-200 rounded flex items-center justify-center"><i class="fas fa-file-excel text-green-600"></i></div>
+                                        <div class="ml-4">
+                                            <div class="text-sm font-medium text-gray-900">2026年节假日排班表</div>
+                                            <div class="text-xs text-gray-500">Excel 文件</div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    <div class="font-mono text-xs">holidays_schedule_2026.xlsx</div>
+                                    <div class="text-[10px] text-gray-400 mt-1">大小: 2.4 MB</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800"><i class="fas fa-check-circle mt-0.5 mr-1"></i> 解析成功</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button class="text-blue-600 hover:text-blue-900 mr-3" title="重新上传替换"><i class="fas fa-upload"></i> 重新上传</button>
+                                    <button class="text-gray-600 hover:text-gray-900" title="查看数据预览"><i class="fas fa-eye"></i> 预览数据</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- PAGE 3: Admin - Theme Configuration (管理员-主题库管理) -->
+        <div id="page-admin-theme" class="flex-1 flex-col h-full hidden bg-gray-50">
+            <header class="h-16 border-b border-gray-200 flex items-center justify-between px-6 bg-white shadow-sm z-10">
+                <h2 class="text-xl font-bold text-gray-800">主题库管理 (语义层)</h2>
+                <button class="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 font-medium shadow-sm transition-colors" onclick="openModal('modal-edit-theme')"><i class="fas fa-plus mr-1"></i> 新建主题库</button>
+            </header>
+            
+            <div class="p-6 overflow-y-auto flex-1">
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 flex items-start">
+                    <i class="fas fa-info-circle text-blue-500 mt-0.5 mr-2"></i>
+                    <div class="text-sm text-blue-800">
+                        <strong>什么是主题库？</strong><br>
+                        主题库是面向业务人员的“语义层”。管理员需要从底层物理库中挑选相关的表，配置好表间关联关系（Join），并为英文字段添加中文别名，这样 AI 才能准确理解业务人员的自然语言提问。
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">主题库名称</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">包含数据表</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8 bg-blue-100 text-blue-600 rounded flex items-center justify-center"><i class="fas fa-traffic-light"></i></div>
+                                        <div class="ml-4 font-medium text-gray-900">交通流量主题库</div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <div class="flex flex-wrap gap-1">
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200" title="来自: 交管核心业务库">traffic_flow_monthly</span>
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200" title="来自: 交管核心业务库">device_status</span>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">已发布</span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button class="text-indigo-600 hover:text-indigo-900 mr-3" onclick="openModal('modal-edit-theme')"><i class="fas fa-cog"></i> 配置表与字段</button>
+                                    <button class="text-red-600 hover:text-red-900">下线</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- 模态框：编辑主题库 (展示如何选表) -->
+    <div id="modal-edit-theme" class="fixed inset-0 modal-overlay z-50 hidden flex items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl w-[800px] max-h-[90vh] flex flex-col overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                <h3 class="text-lg font-bold text-gray-800">配置主题库：交通流量</h3>
+                <button class="text-gray-400 hover:text-gray-600" onclick="closeModal('modal-edit-theme')"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto flex-1 flex gap-6">
+                <!-- 左侧：从数据源选表 -->
+                <div class="w-1/3 border border-gray-200 rounded-lg flex flex-col">
+                    <div class="p-3 border-b border-gray-200 bg-gray-50 font-medium text-sm text-gray-700">
+                        1. 从数据源选择表
+                    </div>
+                    <div class="p-2 border-b border-gray-100">
+                        <select class="w-full text-xs p-1.5 border border-gray-300 rounded">
+                            <option>交管核心业务库 (MySQL)</option>
+                            <option>历史流量数仓 (Doris)</option>
+                            <option>2026年节假日排班表 (Excel)</option>
+                        </select>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-2">
+                        <div class="text-xs text-gray-500 mb-2 px-1">搜索表名...</div>
+                        <ul class="space-y-1">
+                            <li class="flex items-center p-1.5 hover:bg-gray-100 rounded cursor-pointer">
+                                <input type="checkbox" class="mr-2" checked>
+                                <span class="text-sm text-gray-700"><i class="fas fa-table text-gray-400 mr-1"></i> traffic_flow</span>
+                            </li>
+                            <li class="flex items-center p-1.5 hover:bg-gray-100 rounded cursor-pointer bg-blue-50">
+                                <input type="checkbox" class="mr-2" checked>
+                                <span class="text-sm text-blue-700 font-medium"><i class="fas fa-table text-blue-400 mr-1"></i> device_status</span>
+                            </li>
+                            <li class="flex items-center p-1.5 hover:bg-gray-100 rounded cursor-pointer">
+                                <input type="checkbox" class="mr-2">
+                                <span class="text-sm text-gray-700"><i class="fas fa-table text-gray-400 mr-1"></i> accident_logs</span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- 右侧：配置字段别名与关联 -->
+                <div class="w-2/3 border border-gray-200 rounded-lg flex flex-col">
+                    <div class="p-3 border-b border-gray-200 bg-gray-50 font-medium text-sm text-gray-700 flex justify-between">
+                        <span>2. 字段语义配置 (当前表: device_status)</span>
+                        <span class="text-xs text-blue-600 cursor-pointer"><i class="fas fa-link"></i> 配置表间关联(Join)</span>
+                    </div>
+                    <div class="flex-1 overflow-y-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 text-gray-500 text-xs border-b border-gray-200">
+                                <tr>
+                                    <th class="px-4 py-2 font-normal">物理字段名</th>
+                                    <th class="px-4 py-2 font-normal">类型</th>
+                                    <th class="px-4 py-2 font-normal">中文别名 (AI识别用) <i class="fas fa-info-circle text-gray-400" title="业务人员提问时使用的词汇"></i></th>
+                                    <th class="px-4 py-2 font-normal text-center">是否可见</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-gray-100">
+                                <tr>
+                                    <td class="px-4 py-3 font-mono text-gray-600">device_id</td>
+                                    <td class="px-4 py-3 text-gray-400 text-xs">VARCHAR</td>
+                                    <td class="px-4 py-3"><input type="text" value="设备编号" class="border border-gray-300 rounded px-2 py-1 w-full text-xs"></td>
+                                    <td class="px-4 py-3 text-center"><input type="checkbox" checked class="text-indigo-600"></td>
+                                </tr>
+                                <tr>
+                                    <td class="px-4 py-3 font-mono text-gray-600">status_code</td>
+                                    <td class="px-4 py-3 text-gray-400 text-xs">INT</td>
+                                    <td class="px-4 py-3"><input type="text" value="设备状态,运行状态" class="border border-gray-300 rounded px-2 py-1 w-full text-xs"></td>
+                                    <td class="px-4 py-3 text-center"><input type="checkbox" checked class="text-indigo-600"></td>
+                                </tr>
+                                <tr>
+                                    <td class="px-4 py-3 font-mono text-gray-600">internal_ip</td>
+                                    <td class="px-4 py-3 text-gray-400 text-xs">VARCHAR</td>
+                                    <td class="px-4 py-3"><input type="text" placeholder="内部IP" class="border border-gray-300 rounded px-2 py-1 w-full text-xs bg-gray-50" disabled></td>
+                                    <td class="px-4 py-3 text-center"><input type="checkbox" class="text-indigo-600" title="对业务人员隐藏此技术字段"></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="px-6 py-4 border-t border-gray-200 bg-gray-50 flex justify-end space-x-3">
+                <button class="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-100" onclick="closeModal('modal-edit-theme')">取消</button>
+                <button class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 shadow-sm" onclick="closeModal('modal-edit-theme')">保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 角色切换逻辑 ---
+        let currentRole = 'business'; // 'business' or 'admin'
+        
+        function toggleRole() {
+            const sidebar = document.getElementById('sidebar');
+            const menuBusiness = document.getElementById('menu-business');
+            const menuAdmin = document.getElementById('menu-admin');
+            const indicator = document.getElementById('role-indicator');
+            
+            if (currentRole === 'business') {
+                currentRole = 'admin';
+                menuBusiness.classList.add('hidden');
+                menuAdmin.classList.remove('hidden');
+                indicator.innerHTML = '<i class="fas fa-shield-alt mr-1"></i> 管理员视图';
+                switchPage('admin-source'); // 切换到管理员默认页
+            } else {
+                currentRole = 'business';
+                menuAdmin.classList.add('hidden');
+                menuBusiness.classList.remove('hidden');
+                indicator.innerHTML = '<i class="fas fa-user-tie mr-1"></i> 业务人员视图';
+                switchPage('chat'); // 切换回业务默认页
+            }
+        }
+
+        // --- 页面切换逻辑 ---
+        const pages = ['chat', 'dashboard', 'library', 'admin-theme', 'admin-source', 'admin-tickets'];
+        
+        function switchPage(targetPage) {
+            pages.forEach(page => {
+                const el = document.getElementById('page-' + page);
+                if (el) {
+                    if (page === targetPage) {
+                        el.classList.remove('hidden');
+                        el.classList.add('flex');
+                    } else {
+                        el.classList.add('hidden');
+                        el.classList.remove('flex');
+                    }
+                }
+            });
+
+            // 更新管理员左侧菜单高亮
+            if(targetPage.startsWith('admin-')) {
+                ['nav-admin-theme', 'nav-admin-source', 'nav-admin-tickets'].forEach(id => {
+                    const nav = document.getElementById(id);
+                    if(nav) {
+                        nav.classList.remove('bg-gray-700', 'border-l-4', 'border-indigo-500');
+                        if(id === 'nav-' + targetPage) {
+                            nav.classList.add('bg-gray-700', 'border-l-4', 'border-indigo-500');
+                        }
+                    }
+                });
+            }
+        }
+
+        // --- 多选主题库逻辑 ---
+        function toggleThemeDropdown() {
+            document.getElementById('theme-dropdown').classList.toggle('active');
+        }
+
+        function removeTheme(element) {
+            element.parentElement.remove();
+        }
+
+        // 点击外部关闭下拉框
+        document.addEventListener('click', function(event) {
+            const container = document.getElementById('theme-selector-container');
+            if (container && !container.contains(event.target)) {
+                document.getElementById('theme-dropdown').classList.remove('active');
+            }
+        });
+
+        // --- 模态框逻辑 ---
+        function openModal(id) {
+            document.getElementById(id).classList.remove('hidden');
+        }
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        // --- 业务聊天逻辑 (跨主题模拟) ---
+        function simulateChat() {
+            const input = document.getElementById('chat-input');
+            if(!input.value) input.value = "帮我分析上个月各区拥堵指数与追尾事故数量的相关性";
+            
+            document.getElementById('msg-user').style.display = 'flex';
+            document.getElementById('msg-user').querySelector('div:nth-child(2)').innerText = input.value;
+            input.value = '';
+            
+            document.getElementById('msg-loading').style.display = 'flex';
+            document.getElementById('message-container').scrollTop = document.getElementById('message-container').scrollHeight;
+
+            setTimeout(() => {
+                document.getElementById('msg-loading').style.display = 'none';
+                document.getElementById('msg-success').style.display = 'flex';
+                document.getElementById('message-container').scrollTop = document.getElementById('message-container').scrollHeight;
+            }, 1500);
+        }
+
+        function showChart() {
+            document.getElementById('chart-empty').style.display = 'none';
+            document.getElementById('chart-content').classList.remove('hidden');
+        }
+
+        function toggleSQL() {
+            const sql = document.getElementById('sql-code');
+            sql.classList.toggle('hidden');
+        }
+
+        // Sandbox Focus Mode Logic
+        function parseURLParams() {
+            const params = new URLSearchParams(window.location.search);
+            const focus = params.get('focus');
+            if (focus) {
+                document.body.classList.add('sandbox-focus');
+                
+                if(focus === 'chat-multi') {
+                    document.getElementById('sidebar').classList.add('non-focus');
+                    document.getElementById('chart-panel').classList.add('non-focus');
+                } else if (focus === 'admin-source') {
+                    toggleRole(); // 切换到管理员
+                    switchPage('admin-source');
+                } else if (focus === 'admin-theme-edit') {
+                    toggleRole();
+                    switchPage('admin-theme');
+                    openModal('modal-edit-theme');
+                }
+            }
+        }
+
+        window.onload = parseURLParams;
+    </script>
+</body>
+</html>

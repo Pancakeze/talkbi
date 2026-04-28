@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalkBI - 业务端原型</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        .chat-container { height: calc(100vh - 140px); }
+        .chart-placeholder { background: linear-gradient(135deg, #f3f4f6 25%, transparent 25%) -50px 0, linear-gradient(225deg, #f3f4f6 25%, transparent 25%) -50px 0, linear-gradient(315deg, #f3f4f6 25%, transparent 25%), linear-gradient(45deg, #f3f4f6 25%, transparent 25%); background-size: 100px 100px; background-color: #ffffff; }
+        
+        /* Focus Mode Styles */
+        .sandbox-focus .non-focus {
+            opacity: 0.3;
+            pointer-events: none;
+            filter: grayscale(100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 h-screen overflow-hidden flex">
+
+    <!-- Sidebar (图表库 & 历史) -->
+    <aside class="w-64 bg-white border-r border-gray-200 flex flex-col non-focus" id="sidebar">
+        <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+            <div class="font-bold text-xl text-blue-600"><i class="fas fa-chart-pie mr-2"></i>TalkBI</div>
+            <button class="text-gray-400 hover:text-gray-600"><i class="fas fa-bars"></i></button>
+        </div>
+        
+        <div class="p-4">
+            <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg flex items-center justify-center transition-colors" onclick="switchPage('chat')">
+                <i class="fas fa-plus mr-2"></i> 新建分析
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto">
+            <div class="px-4 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">我的资产</div>
+            <nav class="mt-2">
+                <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600" onclick="switchPage('dashboard')">
+                    <i class="fas fa-columns w-5 text-center mr-2"></i> 仪表盘 (2)
+                </a>
+                <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600">
+                    <i class="fas fa-folder w-5 text-center mr-2 text-yellow-500"></i> 个人图表库 (15)
+                </a>
+                <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600 pl-8 text-sm">
+                    <i class="fas fa-chart-line w-5 text-center mr-2 text-gray-400"></i> 交通流量趋势
+                </a>
+                <a href="#" class="flex items-center px-4 py-2 text-gray-700 hover:bg-blue-50 hover:text-blue-600 pl-8 text-sm">
+                    <i class="fas fa-chart-bar w-5 text-center mr-2 text-gray-400"></i> 各区违章统计
+                </a>
+            </nav>
+
+            <div class="px-4 py-2 mt-4 text-xs font-semibold text-gray-400 uppercase tracking-wider">历史对话</div>
+            <nav class="mt-2">
+                <a href="#" class="flex items-center px-4 py-2 text-gray-600 hover:bg-gray-100 text-sm truncate">
+                    <i class="far fa-comment-alt mr-2 text-gray-400"></i> 昨天 - 拥堵指数分析
+                </a>
+                <a href="#" class="flex items-center px-4 py-2 text-gray-600 hover:bg-gray-100 text-sm truncate">
+                    <i class="far fa-comment-alt mr-2 text-gray-400"></i> 04/25 - 事故多发路段排查
+                </a>
+            </nav>
+        </div>
+        
+        <div class="p-4 border-t border-gray-200 flex items-center">
+            <div class="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold mr-3">交</div>
+            <div class="text-sm">
+                <div class="font-medium text-gray-800">交管局-李警官</div>
+                <div class="text-gray-500 text-xs">业务分析员</div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col bg-white relative">
+        
+        <!-- PAGE 1: Chat Analysis (Default) -->
+        <div id="page-chat" class="flex-1 flex flex-col h-full">
+            <!-- Header: Theme Selection -->
+            <header class="h-16 border-b border-gray-200 flex items-center justify-between px-6 bg-white z-10" id="header-theme">
+                <div class="flex items-center">
+                    <span class="text-gray-500 mr-3">当前分析范围:</span>
+                    <div class="relative">
+                        <select class="appearance-none bg-gray-50 border border-gray-300 text-gray-700 py-1.5 pl-4 pr-10 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-medium cursor-pointer">
+                            <option>🚦 交通流量主题库</option>
+                            <option>⚠️ 违章事故主题库</option>
+                            <option>👮 警力调度主题库</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                            <i class="fas fa-chevron-down text-xs"></i>
+                        </div>
+                    </div>
+                    <button class="ml-3 text-sm text-blue-600 hover:text-blue-800 flex items-center bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100">
+                        <i class="fas fa-file-excel mr-1.5"></i> 联合查询 Excel
+                    </button>
+                </div>
+                <div class="flex items-center space-x-4 text-gray-500">
+                    <button class="hover:text-gray-800"><i class="fas fa-redo-alt"></i> 清空对话</button>
+                </div>
+            </header>
+
+            <!-- Chat Area -->
+            <div class="flex-1 flex overflow-hidden">
+                
+                <!-- Left: Conversation -->
+                <div class="w-1/2 flex flex-col border-r border-gray-200" id="chat-panel">
+                    <!-- Messages -->
+                    <div class="flex-1 overflow-y-auto p-6 space-y-6 bg-gray-50" id="message-container">
+                        
+                        <!-- AI Greeting -->
+                        <div class="flex items-start">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm max-w-[85%]">
+                                <p class="text-gray-800 mb-2">您好，李警官！我是 TalkBI 助手。当前已连接 <strong>交通流量主题库</strong>（包含：路口流量表、设备状态表、拥堵指数表）。</p>
+                                <p class="text-gray-600">您可以这样问我：</p>
+                                <ul class="mt-2 space-y-1 text-blue-600">
+                                    <li class="cursor-pointer hover:underline">"帮我统计上个月各个行政区的平均拥堵指数，用柱状图展示"</li>
+                                    <li class="cursor-pointer hover:underline">"昨天早高峰（7-9点）流量最大的前10个路口是哪些？"</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- User Message -->
+                        <div class="flex items-start flex-row-reverse" id="msg-user" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold flex-shrink-0 mt-1 ml-3">交</div>
+                            <div class="bg-blue-600 text-white p-4 rounded-2xl rounded-tr-none shadow-sm text-sm max-w-[85%]">
+                                帮我统计上个月各个行政区的平均拥堵指数，按从高到低排序。
+                            </div>
+                        </div>
+
+                        <!-- AI Loading -->
+                        <div class="flex items-start" id="msg-loading" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm flex items-center text-gray-500">
+                                <i class="fas fa-circle-notch fa-spin mr-2 text-blue-600"></i> 正在分析数据模型并生成图表...
+                            </div>
+                        </div>
+
+                        <!-- AI Response (Success) -->
+                        <div class="flex items-start" id="msg-success" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center flex-shrink-0 mt-1">
+                                <i class="fas fa-robot text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-gray-100 text-sm max-w-[90%]">
+                                <p class="text-gray-800 mb-3">已为您生成上个月各行政区平均拥堵指数的柱状图。数据显示，<strong>朝阳区</strong>的拥堵指数最高（3.8），<strong>海淀区</strong>次之（3.5）。</p>
+                                <div class="bg-gray-50 rounded border border-gray-200 p-3 mb-3">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="text-xs text-gray-500 font-mono"><i class="fas fa-database mr-1"></i> 执行的查询逻辑</span>
+                                        <button class="text-xs text-blue-600 hover:text-blue-800" onclick="toggleSQL()">查看SQL</button>
+                                    </div>
+                                    <div class="text-xs text-gray-700 flex flex-wrap gap-2">
+                                        <span class="bg-white px-2 py-1 rounded border border-gray-200">维度: 行政区</span>
+                                        <span class="bg-white px-2 py-1 rounded border border-gray-200">度量: AVG(拥堵指数)</span>
+                                        <span class="bg-white px-2 py-1 rounded border border-gray-200">时间: 上个月</span>
+                                    </div>
+                                    <div id="sql-code" class="mt-2 p-2 bg-gray-800 text-green-400 font-mono text-xs rounded hidden overflow-x-auto">
+                                        SELECT district_name, AVG(congestion_index) as avg_index <br>
+                                        FROM traffic_flow_monthly <br>
+                                        WHERE record_month = '2026-03' <br>
+                                        GROUP BY district_name <br>
+                                        ORDER BY avg_index DESC;
+                                    </div>
+                                </div>
+                                <div class="flex space-x-2">
+                                    <button class="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-3 py-1.5 rounded hover:bg-blue-100" onclick="showChart()"><i class="fas fa-eye mr-1"></i> 在右侧预览图表</button>
+                                    <button class="text-xs bg-white text-gray-600 border border-gray-200 px-3 py-1.5 rounded hover:bg-gray-50"><i class="fas fa-save mr-1"></i> 保存到图表库</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- AI Response (Error) -->
+                        <div class="flex items-start" id="msg-error" style="display:none;">
+                            <div class="w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center flex-shrink-0 mt-1">
+                                <i class="fas fa-exclamation-triangle text-sm"></i>
+                            </div>
+                            <div class="ml-3 bg-red-50 p-4 rounded-2xl rounded-tl-none shadow-sm border border-red-100 text-sm max-w-[85%]">
+                                <p class="text-red-800 font-medium mb-1">抱歉，我无法理解或执行该查询。</p>
+                                <p class="text-red-600 text-xs mb-3">原因：当前“交通流量主题库”中未找到名为“天气情况”的字段。</p>
+                                <div class="flex space-x-2">
+                                    <button class="text-xs bg-white text-red-600 border border-red-200 px-3 py-1.5 rounded hover:bg-red-50">换个说法重试</button>
+                                    <button class="text-xs bg-red-600 text-white px-3 py-1.5 rounded hover:bg-red-700 shadow-sm"><i class="fas fa-headset mr-1"></i> 联系管理员排查</button>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Input Area -->
+                    <div class="p-4 bg-white border-t border-gray-200" id="input-area">
+                        <div class="relative flex items-end border border-gray-300 rounded-xl bg-white shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500 overflow-hidden">
+                            <textarea id="chat-input" rows="2" class="w-full py-3 pl-4 pr-12 bg-transparent border-none focus:ring-0 resize-none text-sm text-gray-800 placeholder-gray-400" placeholder="输入您想分析的数据问题，例如：上个月各区拥堵指数对比..."></textarea>
+                            <button class="absolute right-2 bottom-2 w-8 h-8 flex items-center justify-center rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors" onclick="simulateChat()">
+                                <i class="fas fa-paper-plane text-sm"></i>
+                            </button>
+                        </div>
+                        <div class="flex justify-between mt-2 px-1">
+                            <div class="text-xs text-gray-400">支持自然语言，AI 自动生成图表</div>
+                            <div class="text-xs text-gray-400 cursor-pointer hover:text-blue-600" onclick="simulateError()">模拟异常情况测试</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Chart Preview & Edit -->
+                <div class="w-1/2 bg-white flex flex-col relative" id="chart-panel">
+                    
+                    <!-- Empty State -->
+                    <div id="chart-empty" class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 bg-gray-50 z-10">
+                        <i class="fas fa-chart-area text-6xl mb-4 text-gray-300"></i>
+                        <p class="text-sm">在左侧对话框输入需求，图表将在此处生成</p>
+                    </div>
+
+                    <!-- Chart Content (Hidden initially) -->
+                    <div id="chart-content" class="flex-1 flex flex-col hidden h-full">
+                        <!-- Chart Toolbar -->
+                        <div class="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-gray-50">
+                            <div class="flex space-x-1">
+                                <button class="p-1.5 text-blue-600 bg-blue-50 rounded border border-blue-200 hover:bg-blue-100" title="柱状图"><i class="fas fa-chart-bar"></i></button>
+                                <button class="p-1.5 text-gray-500 hover:bg-gray-200 rounded" title="折线图"><i class="fas fa-chart-line"></i></button>
+                                <button class="p-1.5 text-gray-500 hover:bg-gray-200 rounded" title="饼图"><i class="fas fa-chart-pie"></i></button>
+                                <button class="p-1.5 text-gray-500 hover:bg-gray-200 rounded" title="数据表"><i class="fas fa-table"></i></button>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button class="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 border border-gray-300 rounded bg-white"><i class="fas fa-download mr-1"></i>导出图片</button>
+                                <button class="text-xs text-white bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded shadow-sm"><i class="fas fa-save mr-1"></i>保存图表</button>
+                            </div>
+                        </div>
+
+                        <!-- Chart Display Area -->
+                        <div class="flex-1 p-6 overflow-y-auto">
+                            <div class="bg-white border border-gray-200 rounded-lg shadow-sm p-4 h-full flex flex-col">
+                                <div class="flex justify-between items-start mb-4 group">
+                                    <h3 class="text-lg font-bold text-gray-800 border-b border-transparent hover:border-gray-300 cursor-text inline-block pb-1">2026年3月各行政区平均拥堵指数对比 <i class="fas fa-pencil-alt text-xs text-gray-400 opacity-0 group-hover:opacity-100 ml-1"></i></h3>
+                                    <button class="text-gray-400 hover:text-blue-600"><i class="fas fa-cog"></i></button>
+                                </div>
+                                
+                                <!-- Fake Chart UI using CSS -->
+                                <div class="flex-1 flex items-end justify-around pb-8 pt-4 px-4 border-l-2 border-b-2 border-gray-300 relative mt-4">
+                                    <!-- Y Axis Labels -->
+                                    <div class="absolute left-[-30px] bottom-[10%] text-xs text-gray-500">1.0</div>
+                                    <div class="absolute left-[-30px] bottom-[35%] text-xs text-gray-500">2.0</div>
+                                    <div class="absolute left-[-30px] bottom-[60%] text-xs text-gray-500">3.0</div>
+                                    <div class="absolute left-[-30px] bottom-[85%] text-xs text-gray-500">4.0</div>
+                                    
+                                    <!-- Grid Lines -->
+                                    <div class="absolute left-0 right-0 bottom-[10%] border-t border-dashed border-gray-200 z-0"></div>
+                                    <div class="absolute left-0 right-0 bottom-[35%] border-t border-dashed border-gray-200 z-0"></div>
+                                    <div class="absolute left-0 right-0 bottom-[60%] border-t border-dashed border-gray-200 z-0"></div>
+                                    <div class="absolute left-0 right-0 bottom-[85%] border-t border-dashed border-gray-200 z-0"></div>
+
+                                    <!-- Bars -->
+                                    <div class="w-12 bg-blue-500 rounded-t-sm relative z-10 group cursor-pointer transition-all hover:bg-blue-600" style="height: 80%;">
+                                        <div class="absolute -top-6 left-1/2 transform -translate-x-1/2 text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100">3.8</div>
+                                        <div class="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-gray-600 whitespace-nowrap">朝阳区</div>
+                                    </div>
+                                    <div class="w-12 bg-blue-400 rounded-t-sm relative z-10 group cursor-pointer transition-all hover:bg-blue-500" style="height: 72%;">
+                                        <div class="absolute -top-6 left-1/2 transform -translate-x-1/2 text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100">3.5</div>
+                                        <div class="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-gray-600 whitespace-nowrap">海淀区</div>
+                                    </div>
+                                    <div class="w-12 bg-blue-300 rounded-t-sm relative z-10 group cursor-pointer transition-all hover:bg-blue-400" style="height: 55%;">
+                                        <div class="absolute -top-6 left-1/2 transform -translate-x-1/2 text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100">2.8</div>
+                                        <div class="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-gray-600 whitespace-nowrap">丰台区</div>
+                                    </div>
+                                    <div class="w-12 bg-blue-200 rounded-t-sm relative z-10 group cursor-pointer transition-all hover:bg-blue-300" style="height: 40%;">
+                                        <div class="absolute -top-6 left-1/2 transform -translate-x-1/2 text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100">2.1</div>
+                                        <div class="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-gray-600 whitespace-nowrap">西城区</div>
+                                    </div>
+                                    <div class="w-12 bg-blue-100 rounded-t-sm relative z-10 group cursor-pointer transition-all hover:bg-blue-200" style="height: 25%;">
+                                        <div class="absolute -top-6 left-1/2 transform -translate-x-1/2 text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100">1.5</div>
+                                        <div class="absolute -bottom-6 left-1/2 transform -translate-x-1/2 text-xs text-gray-600 whitespace-nowrap">东城区</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Data Logic Editor (Bottom Drawer) -->
+                        <div class="h-48 border-t border-gray-200 bg-white flex flex-col">
+                            <div class="px-4 py-2 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+                                <span class="text-xs font-bold text-gray-600"><i class="fas fa-sliders-h mr-1"></i> 数据逻辑编辑 (高级)</span>
+                                <button class="text-gray-400 hover:text-gray-600"><i class="fas fa-chevron-down"></i></button>
+                            </div>
+                            <div class="flex-1 p-4 flex gap-4 overflow-x-auto">
+                                <div class="w-48 border border-gray-200 rounded p-2 bg-gray-50">
+                                    <div class="text-xs text-gray-500 mb-2 font-medium">维度 (X轴)</div>
+                                    <div class="bg-white border border-blue-300 rounded px-2 py-1 text-sm text-blue-700 flex justify-between items-center shadow-sm">
+                                        <span><i class="fas fa-font text-gray-400 mr-1 text-xs"></i> 行政区</span>
+                                        <i class="fas fa-times text-gray-300 hover:text-red-500 cursor-pointer"></i>
+                                    </div>
+                                </div>
+                                <div class="w-48 border border-gray-200 rounded p-2 bg-gray-50">
+                                    <div class="text-xs text-gray-500 mb-2 font-medium">度量 (Y轴)</div>
+                                    <div class="bg-white border border-green-300 rounded px-2 py-1 text-sm text-green-700 flex justify-between items-center shadow-sm">
+                                        <span><i class="fas fa-hashtag text-gray-400 mr-1 text-xs"></i> AVG(拥堵指数)</span>
+                                        <i class="fas fa-times text-gray-300 hover:text-red-500 cursor-pointer"></i>
+                                    </div>
+                                </div>
+                                <div class="w-48 border border-gray-200 rounded p-2 bg-gray-50">
+                                    <div class="text-xs text-gray-500 mb-2 font-medium">筛选条件</div>
+                                    <div class="bg-white border border-yellow-300 rounded px-2 py-1 text-sm text-yellow-700 flex justify-between items-center shadow-sm">
+                                        <span>时间 = 上个月</span>
+                                        <i class="fas fa-times text-gray-300 hover:text-red-500 cursor-pointer"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- PAGE 2: Dashboard (Hidden initially) -->
+        <div id="page-dashboard" class="flex-1 flex-col h-full hidden bg-gray-100">
+            <header class="h-16 border-b border-gray-200 flex items-center justify-between px-6 bg-white">
+                <h2 class="text-xl font-bold text-gray-800">交管局晨报大屏</h2>
+                <div class="flex space-x-3">
+                    <button class="px-4 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50"><i class="fas fa-share-alt mr-1"></i> 分享</button>
+                    <button class="px-4 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700"><i class="fas fa-edit mr-1"></i> 编辑布局</button>
+                </div>
+            </header>
+            <div class="p-6 grid grid-cols-2 gap-6 overflow-y-auto">
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 h-64 flex flex-col justify-center items-center text-gray-400">
+                    <i class="fas fa-chart-bar text-4xl mb-2"></i>
+                    <span>各区拥堵指数图表</span>
+                </div>
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 h-64 flex flex-col justify-center items-center text-gray-400">
+                    <i class="fas fa-chart-pie text-4xl mb-2"></i>
+                    <span>事故类型占比图表</span>
+                </div>
+                <div class="bg-white p-4 rounded-xl shadow-sm border border-gray-200 h-64 col-span-2 flex flex-col justify-center items-center text-gray-400">
+                    <i class="fas fa-chart-line text-4xl mb-2"></i>
+                    <span>全天流量趋势折线图</span>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        // Sandbox Focus Mode Logic
+        function parseURLParams() {
+            const params = new URLSearchParams(window.location.search);
+            const focus = params.get('focus');
+            if (focus) {
+                document.body.classList.add('sandbox-focus');
+                
+                // Hide/dim elements based on focus target
+                if(focus === 'chat') {
+                    document.getElementById('sidebar').classList.add('non-focus');
+                    document.getElementById('header-theme').classList.add('non-focus');
+                    document.getElementById('chart-panel').classList.add('non-focus');
+                } else if (focus === 'chart-edit') {
+                    document.getElementById('sidebar').classList.add('non-focus');
+                    document.getElementById('chat-panel').classList.add('non-focus');
+                } else if (focus === 'exception') {
+                    document.getElementById('sidebar').classList.add('non-focus');
+                    document.getElementById('chart-panel').classList.add('non-focus');
+                    simulateError();
+                }
+            }
+        }
+
+        // Simple Interactions
+        function simulateChat() {
+            const input = document.getElementById('chat-input');
+            if(!input.value) input.value = "帮我统计上个月各个行政区的平均拥堵指数";
+            
+            document.getElementById('msg-user').style.display = 'flex';
+            document.getElementById('msg-user').querySelector('div:nth-child(2)').innerText = input.value;
+            input.value = '';
+            
+            document.getElementById('msg-loading').style.display = 'flex';
+            document.getElementById('message-container').scrollTop = document.getElementById('message-container').scrollHeight;
+
+            setTimeout(() => {
+                document.getElementById('msg-loading').style.display = 'none';
+                document.getElementById('msg-success').style.display = 'flex';
+                document.getElementById('message-container').scrollTop = document.getElementById('message-container').scrollHeight;
+            }, 1500);
+        }
+
+        function simulateError() {
+            document.getElementById('msg-user').style.display = 'flex';
+            document.getElementById('msg-user').querySelector('div:nth-child(2)').innerText = "帮我看看昨天下雨对流量的影响";
+            
+            document.getElementById('msg-loading').style.display = 'flex';
+            
+            setTimeout(() => {
+                document.getElementById('msg-loading').style.display = 'none';
+                document.getElementById('msg-error').style.display = 'flex';
+                document.getElementById('message-container').scrollTop = document.getElementById('message-container').scrollHeight;
+            }, 1000);
+        }
+
+        function showChart() {
+            document.getElementById('chart-empty').style.display = 'none';
+            document.getElementById('chart-content').classList.remove('hidden');
+        }
+
+        function toggleSQL() {
+            const sql = document.getElementById('sql-code');
+            sql.classList.toggle('hidden');
+        }
+
+        function switchPage(page) {
+            if(page === 'dashboard') {
+                document.getElementById('page-chat').classList.add('hidden');
+                document.getElementById('page-dashboard').classList.remove('hidden');
+                document.getElementById('page-dashboard').classList.add('flex');
+            } else {
+                document.getElementById('page-dashboard').classList.add('hidden');
+                document.getElementById('page-dashboard').classList.remove('flex');
+                document.getElementById('page-chat').classList.remove('hidden');
+            }
+        }
+
+        // Initialize
+        window.onload = parseURLParams;
+    </script>
+</body>
+</html>

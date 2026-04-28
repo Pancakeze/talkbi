@@ -1,0 +1,25 @@
+{
+  "name": "talkbi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TalkBI monorepo — apps/web (Vite + React), apps/api (FastAPI), infra (Docker)",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w talkbi-web",
+    "build:web": "npm run build -w talkbi-web",
+    "test:web": "npm run test -w talkbi-web"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "react-grid-layout": "^2.2.3",
+    "react-resizable": "^3.1.3"
+  },
+  "devDependencies": {
+    "@types/react-grid-layout": "^1.3.6",
+    "@types/react-resizable": "^3.0.8"
+  }
+}

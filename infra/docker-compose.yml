@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: talkbi
+      POSTGRES_PASSWORD: talkbi
+      POSTGRES_DB: talkbi
+    ports:
+      - "5432:5432"
+    volumes:
+      - talkbi_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talkbi -d talkbi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Optional — API does not depend on it yet; use for future caching / jobs.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - talkbi_redis:/data
+
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://talkbi:talkbi@db:5432/talkbi
+      # Override in production. The default below is dev-only.
+      SECRET_KEY: ${SECRET_KEY:-talkbi-dev-secret-key}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  talkbi_pg:
+  talkbi_redis:
