@@ -31,7 +31,11 @@ _FORBIDDEN_FUNCTIONS = (
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
-_FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_LIST_RE = re.compile(
+    r"\bfrom\b\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\bhaving\b|\border\s+by\b|\blimit\b|\bunion\b|\bintersect\b|\bexcept\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_JOIN_RE = re.compile(r"\bjoin\b\s+([^\s,;]+)", re.IGNORECASE)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -42,21 +46,59 @@ def _strip_sql(sql_text: str) -> str:
 def _normalize_ident(token: str) -> str:
     # Keep dots but strip quoting chars.
     t = token.strip()
-    # remove trailing punctuation like "," or ")"
-    t = t.rstrip(",")
+    # remove punctuation left by nested expressions.
+    t = t.strip(",()")
     # Strip common quoting.
     t = t.replace('"', "").replace("`", "")
     return t
 
 
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "`", "'"):
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")" and depth:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _first_relation_token(segment: str) -> str | None:
+    stripped = segment.strip()
+    if not stripped:
+        return None
+    token = stripped.split(None, 1)[0]
+    ident = _normalize_ident(token)
+    # Subqueries are validated by their inner FROM/JOIN matches.
+    if ident.startswith("select"):
+        return None
+    return ident or None
+
+
 def _extract_tables(sql_text: str) -> set[str]:
     tables: set[str] = set()
-    for _, raw in _FROM_JOIN_RE.findall(sql_text):
+    for from_list in _FROM_LIST_RE.findall(sql_text):
+        for segment in _split_top_level_commas(from_list):
+            ident = _first_relation_token(segment)
+            if ident:
+                tables.add(ident)
+    for raw in _JOIN_RE.findall(sql_text):
         ident = _normalize_ident(raw)
-        # Ignore subqueries: FROM (SELECT ...)
-        if ident.startswith("("):
-            continue
-        tables.add(ident)
+        if ident:
+            tables.add(ident)
     return tables
 
 
