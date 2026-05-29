@@ -51,6 +51,15 @@ def test_validate_sql_enforces_table_allowlist():
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
 
 
+def test_validate_sql_enforces_schema_with_table_allowlist():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"public.users"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql('SELECT username FROM "public"."users" LIMIT 10', policy=policy)
+
+
 def test_validate_sql_enforces_schema_when_no_allowlist():
     policy = SQLGuardPolicy(allowed_schemas=("staging",))
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
@@ -61,3 +70,8 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+
+
+def test_validate_sql_rejects_select_into():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a INTO leaked FROM "staging"."ds_1_t" LIMIT 10')

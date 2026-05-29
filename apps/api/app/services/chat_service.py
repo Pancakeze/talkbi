@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
@@ -223,6 +224,37 @@ def _chart_from_rows(prompt: str, rows: list[dict]) -> dict:
     }
 
 
+def _expected_staging_qualified(table_name: str) -> str:
+    if engine.dialect.name == "postgresql":
+        return f'"{STAGING_SCHEMA}"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _trusted_staging_tables(ds: DataSource) -> list[dict]:
+    staging = ds.connection_info.get("staging") or {}
+    tables_meta_list = staging.get("tables") or []
+    if not isinstance(tables_meta_list, list):
+        return []
+
+    table_prefix = f"ds_{ds.id}_"
+    trusted: list[dict] = []
+    for meta in tables_meta_list:
+        if not isinstance(meta, dict):
+            continue
+
+        table_name = meta.get("table")
+        qualified = meta.get("qualified")
+        if not isinstance(table_name, str) or not table_name.startswith(table_prefix):
+            continue
+        if not isinstance(qualified, str) or qualified != _expected_staging_qualified(table_name):
+            continue
+        if engine.dialect.name == "postgresql" and meta.get("schema") != STAGING_SCHEMA:
+            continue
+
+        trusted.append(meta)
+    return trusted
+
+
 def _try_staging_query(
     db: Session,
     user: User,
@@ -252,8 +284,7 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _trusted_staging_tables(ds)
         if not tables_meta_list:
             continue
 
