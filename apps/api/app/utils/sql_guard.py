@@ -32,6 +32,7 @@ _FORBIDDEN_FUNCTIONS = (
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_SELECT_INTO_RE = re.compile(r"\bselect\b(?:(?!\bfrom\b).)*\binto\b", re.IGNORECASE | re.DOTALL)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -107,6 +108,8 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
     if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
+    if _SELECT_INTO_RE.search(cleaned):
+        raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)
@@ -115,19 +118,16 @@ def validate_sql(
             raise ValueError("LIMIT clause is required.")
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
+    for t in tables:
+        if "." in t:
+            schema = t.split(".", 1)[0]
+            if schema not in policy.allowed_schemas:
+                raise ValueError("Schema is not allowed.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:
                 raise ValueError("Table is not allowed.")
-    else:
-        # Schema check when table allowlist isn't provided:
-        # allow bare table name (no schema) for sqlite, but if schema is present enforce it.
-        for t in tables:
-            if "." in t:
-                schema = t.split(".", 1)[0]
-                if schema not in policy.allowed_schemas:
-                    raise ValueError("Schema is not allowed.")
 
 
 
