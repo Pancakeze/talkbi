@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -27,7 +28,20 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "pg_ls_logdir",
+    "pg_ls_waldir",
+    "pg_ls_archive_statusdir",
+    "pg_ls_tmpdir",
+    "lo_import",
     "sqlite_sleep",
+)
+_FORBIDDEN_FUNCTION_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(fn) for fn in _FORBIDDEN_FUNCTIONS) + r")\s*\(",
+    re.IGNORECASE,
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
@@ -105,11 +119,13 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
+    if _FORBIDDEN_FUNCTION_RE.search(cleaned):
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)
+    if policy.allowed_tables is not None and not tables:
+        raise ValueError("Query must reference an allowed table.")
     if tables:
         if lim is None:
             raise ValueError("LIMIT clause is required.")
