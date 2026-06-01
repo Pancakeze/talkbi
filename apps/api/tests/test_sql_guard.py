@@ -21,6 +21,11 @@ def test_validate_sql_rejects_dangerous_keywords():
         validate_sql("SELECT 1; DROP TABLE users;")
 
 
+def test_validate_sql_rejects_select_into_side_effect():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * INTO public.copy FROM "staging"."ds_1_t" LIMIT 10')
+
+
 def test_validate_sql_rejects_comments():
     with pytest.raises(ValueError):
         validate_sql("SELECT 1 -- evil")
@@ -48,6 +53,8 @@ def test_validate_sql_enforces_table_allowlist():
     )
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
     with pytest.raises(ValueError):
+        validate_sql("SELECT 1", policy=policy)
+    with pytest.raises(ValueError):
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
 
 
@@ -61,3 +68,9 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+
+
+def test_validate_sql_rejects_postgres_file_functions():
+    for fn in ("pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file"):
+        with pytest.raises(ValueError):
+            validate_sql(f"SELECT {fn}('/etc/passwd')")
