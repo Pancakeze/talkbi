@@ -51,11 +51,36 @@ def test_validate_sql_enforces_table_allowlist():
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
 
 
+def test_validate_sql_enforces_table_allowlist_for_comma_joins():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    validate_sql(
+        'SELECT a.id, b.id FROM "staging"."ds_1_t" a, "staging"."ds_1_t" b LIMIT 10',
+        policy=policy,
+    )
+    with pytest.raises(ValueError):
+        validate_sql(
+            'SELECT t.a, u.username FROM "staging"."ds_1_t" t, users u LIMIT 10',
+            policy=policy,
+        )
+
+
 def test_validate_sql_enforces_schema_when_no_allowlist():
     policy = SQLGuardPolicy(allowed_schemas=("staging",))
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
     with pytest.raises(ValueError):
         validate_sql('SELECT a FROM "public"."users" LIMIT 10', policy=policy)
+
+
+def test_validate_sql_enforces_schema_for_comma_joins():
+    policy = SQLGuardPolicy(allowed_schemas=("staging",))
+    with pytest.raises(ValueError):
+        validate_sql(
+            'SELECT t.a, u.username FROM "staging"."ds_1_t" t, "public"."users" u LIMIT 10',
+            policy=policy,
+        )
 
 
 def test_validate_sql_rejects_forbidden_function():
