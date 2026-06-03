@@ -49,6 +49,8 @@ def test_validate_sql_enforces_table_allowlist():
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
     with pytest.raises(ValueError):
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a FROM "staging"."ds_1_t" t, users u LIMIT 10', policy=policy)
 
 
 def test_validate_sql_enforces_schema_when_no_allowlist():
@@ -61,3 +63,15 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+
+
+def test_validate_sql_rejects_select_into_side_effect():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * INTO copied_table FROM "staging"."ds_1_t" LIMIT 10')
+
+
+def test_validate_sql_requires_top_level_limit_for_subquery_sources():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * FROM (SELECT * FROM "staging"."ds_1_t" LIMIT 10) sub')
+
+    validate_sql('SELECT * FROM (SELECT * FROM "staging"."ds_1_t" LIMIT 10) sub LIMIT 5')
