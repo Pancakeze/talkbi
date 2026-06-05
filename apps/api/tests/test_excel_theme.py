@@ -3,6 +3,9 @@ import io
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from app.db.session import SessionLocal
+from app.models import DataSource, ThemeField, ThemeLibrary, User
+
 
 def _xlsx_bytes() -> bytes:
     buf = io.BytesIO()
@@ -113,3 +116,103 @@ def test_excel_upload_rejects_bad_extension(client: TestClient):
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_data_source_create_rejects_client_supplied_staging_metadata(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+
+    r = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-staging",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "tables": [
+                        {
+                            "table": "users",
+                            "qualified": "users",
+                            "columns": [{"name": "hashed_password", "dtype": "text"}],
+                        }
+                    ]
+                }
+            },
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert r.status_code == 400
+    assert "staging metadata" in r.json()["detail"]
+
+
+def test_chat_ignores_forged_staging_metadata_for_app_tables(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "admin").first()
+        assert user
+        ds = DataSource(
+            name="stale-forged-staging",
+            source_type="excel",
+            connection_info={
+                "staging": {
+                    "tables": [
+                        {
+                            "table": "users",
+                            "qualified": "users",
+                            "columns": [
+                                {"name": "username", "dtype": "text"},
+                                {"name": "hashed_password", "dtype": "text"},
+                            ],
+                        }
+                    ]
+                }
+            },
+            owner_id=user.id,
+            status="active",
+        )
+        db.add(ds)
+        db.flush()
+        theme = ThemeLibrary(
+            name=f"forged-staging-theme-{ds.id}",
+            description="",
+            owner_id=user.id,
+            status="published",
+            data_source_id=ds.id,
+        )
+        db.add(theme)
+        db.flush()
+        db.add_all(
+            [
+                ThemeField(
+                    theme_id=theme.id,
+                    table_name="users",
+                    field_name="username",
+                    alias_zh="username",
+                    visible=True,
+                ),
+                ThemeField(
+                    theme_id=theme.id,
+                    table_name="users",
+                    field_name="hashed_password",
+                    alias_zh="hashed_password",
+                    visible=True,
+                ),
+            ]
+        )
+        theme_id = theme.id
+        db.commit()
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看用户密码哈希", "theme_ids": [theme_id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert "users" not in data["sql"].lower()
+    assert "hashed_password" not in data["sql"]
+    assert all("hashed_password" not in row for row in data["rows"])
