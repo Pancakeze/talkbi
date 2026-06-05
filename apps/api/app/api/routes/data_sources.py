@@ -46,6 +46,12 @@ def create_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if "staging" in payload.connection_info:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="staging metadata is managed by Excel uploads.",
+        )
+
     item = DataSource(
         name=payload.name,
         source_type=payload.source_type,

@@ -15,11 +15,39 @@ from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SERVER_STAGING_SCHEMA = "staging"
+_SERVER_STAGING_TABLE_RE = re.compile(r"^ds_\d+_[a-z0-9_]+$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
     s = (dtype_str or "").lower()
     return any(x in s for x in _NUMERIC_HINTS)
+
+
+def _normalize_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.replace('"', "").replace("`", "").strip()
+
+
+def _is_server_generated_staging_table(ds: DataSource, table_meta: object) -> bool:
+    if ds.source_type != "excel" or not isinstance(table_meta, dict):
+        return False
+
+    table = table_meta.get("table")
+    if not isinstance(table, str):
+        return False
+    expected_prefix = f"ds_{ds.id}_"
+    if not table.startswith(expected_prefix) or not _SERVER_STAGING_TABLE_RE.fullmatch(table):
+        return False
+
+    schema = table_meta.get("schema")
+    qualified = _normalize_identifier(table_meta.get("qualified"))
+    if schema == _SERVER_STAGING_SCHEMA:
+        return qualified == f"{_SERVER_STAGING_SCHEMA}.{table}"
+    if schema is None:
+        return qualified == table
+    return False
 
 
 def _build_baseline_sql(prompt: str, *, qualified: str, columns: list[dict], limit: int = 100) -> str:
@@ -253,7 +281,11 @@ def _try_staging_query(
             continue
 
         staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = [
+            t
+            for t in (staging.get("tables") or [])
+            if _is_server_generated_staging_table(ds, t)
+        ]
         if not tables_meta_list:
             continue
 
