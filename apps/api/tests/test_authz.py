@@ -80,3 +80,67 @@ def test_theme_create_with_unowned_data_source_is_rejected(client: TestClient):
     )
     assert bad.status_code == 400
     assert "data_source_id" in bad.json()["detail"]
+
+
+def test_chat_does_not_trust_forged_staging_metadata(client: TestClient):
+    analyst_token = _login(client, "analyst", "analyst123")
+    headers = {"Authorization": f"Bearer {analyst_token}"}
+
+    ds = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-users-ds",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "tables": [
+                        {
+                            "sheet_name": "Users",
+                            "table": "users",
+                            "schema": None,
+                            "qualified": "users",
+                            "row_count": 2,
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ]
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert ds.status_code == 200, ds.text
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "AUTHZ-FORGED-STAGING", "data_source_id": ds.json()["id"]},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        field = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={
+                "table_name": "users",
+                "field_name": col,
+                "alias_zh": col,
+                "visible": True,
+            },
+            headers=headers,
+        )
+        assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看用户", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    body = chat.json()
+    assert "users" not in body["sql"].lower()
+    assert "hashed_password" not in body["sql"]
+    assert all("hashed_password" not in row for row in body["rows"])
