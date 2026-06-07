@@ -51,6 +51,24 @@ def test_validate_sql_enforces_table_allowlist():
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
 
 
+def test_validate_sql_rejects_allowlist_query_without_table():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql("SELECT readfile('talkbi.db')", policy=policy)
+
+
+def test_validate_sql_rejects_select_into_mutation():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * INTO leaked_copy FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
+
+
 def test_validate_sql_enforces_schema_when_no_allowlist():
     policy = SQLGuardPolicy(allowed_schemas=("staging",))
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
@@ -61,3 +79,5 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql('SELECT readfile("talkbi.db") FROM "staging"."ds_1_t" LIMIT 1')

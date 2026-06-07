@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -28,6 +29,12 @@ _FORBIDDEN_KEYWORDS = (
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
     "sqlite_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "readfile",
+    "load_extension",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
@@ -70,6 +77,10 @@ def _extract_limit(sql_text: str) -> Optional[int]:
         return None
 
 
+def _has_forbidden_function(sql_text: str) -> bool:
+    return any(re.search(rf"\b{re.escape(fn)}\s*\(", sql_text, re.IGNORECASE) for fn in _FORBIDDEN_FUNCTIONS)
+
+
 @dataclass(frozen=True)
 class SQLGuardPolicy:
     max_limit: int = 1000
@@ -105,7 +116,7 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
+    if _has_forbidden_function(cleaned):
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
@@ -116,6 +127,8 @@ def validate_sql(
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
+        if not tables:
+            raise ValueError("SQL must reference an allowed table.")
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:
