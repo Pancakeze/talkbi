@@ -15,6 +15,7 @@ from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_STAGING_SCHEMA = "staging"
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +115,55 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _trusted_staging_tables(ds: DataSource) -> list[dict]:
+    if ds.source_type != "excel" or ds.status != "active":
+        return []
+    if not isinstance(ds.connection_info, dict):
+        return []
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return []
+    tables = staging.get("tables")
+    if not isinstance(tables, list):
+        return []
+
+    expected_prefix = f"ds_{ds.id}_"
+    trusted: list[dict] = []
+    for table_meta in tables:
+        if not isinstance(table_meta, dict):
+            continue
+        table_name = table_meta.get("table")
+        qualified = table_meta.get("qualified")
+        columns = table_meta.get("columns")
+        if not (
+            isinstance(table_name, str)
+            and table_name.startswith(expected_prefix)
+            and isinstance(qualified, str)
+            and isinstance(columns, list)
+        ):
+            continue
+
+        trusted_columns = [
+            col
+            for col in columns
+            if isinstance(col, dict) and isinstance(col.get("name"), str)
+        ]
+        if not trusted_columns:
+            continue
+
+        if table_meta.get("schema") == _STAGING_SCHEMA:
+            expected_qualified = f'"{_STAGING_SCHEMA}"."{table_name}"'
+        else:
+            expected_qualified = f'"{table_name}"'
+        if qualified != expected_qualified:
+            continue
+
+        trusted.append({**table_meta, "columns": trusted_columns})
+    return trusted
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -249,11 +299,10 @@ def _try_staging_query(
             )
             .first()
         )
-        if not ds or not isinstance(ds.connection_info, dict):
+        if not ds:
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _trusted_staging_tables(ds)
         if not tables_meta_list:
             continue
 
