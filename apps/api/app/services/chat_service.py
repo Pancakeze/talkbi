@@ -9,12 +9,14 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +116,60 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _normalize_qualified_identifier(identifier: str) -> str:
+    return identifier.strip().replace('"', "").replace("`", "")
+
+
+def _canonical_staging_qualified(table_name: str) -> str:
+    if engine.dialect.name == "postgresql":
+        return f'"{STAGING_SCHEMA}"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _validated_staging_tables(ds: DataSource) -> list[dict]:
+    if not isinstance(ds.connection_info, dict):
+        return []
+
+    staging = ds.connection_info.get("staging") or {}
+    if not isinstance(staging, dict):
+        return []
+    tables_meta_list = staging.get("tables") or []
+    if not isinstance(tables_meta_list, list):
+        return []
+
+    valid_tables: list[dict] = []
+    expected_prefix = f"ds_{ds.id}_"
+    for raw in tables_meta_list:
+        if not isinstance(raw, dict):
+            continue
+
+        table_name = raw.get("table")
+        qualified = raw.get("qualified")
+        if not isinstance(table_name, str) or not isinstance(qualified, str):
+            continue
+        if not table_name.startswith(expected_prefix) or not _SAFE_IDENTIFIER_RE.match(table_name):
+            continue
+
+        canonical = _canonical_staging_qualified(table_name)
+        if _normalize_qualified_identifier(qualified) != _normalize_qualified_identifier(canonical):
+            continue
+
+        columns = []
+        for col in raw.get("columns") or []:
+            if not isinstance(col, dict):
+                continue
+            name = col.get("name")
+            if isinstance(name, str) and _SAFE_IDENTIFIER_RE.match(name):
+                columns.append({"name": name, "dtype": str(col.get("dtype", ""))})
+        if not columns:
+            continue
+
+        valid_tables.append({**raw, "table": table_name, "qualified": canonical, "columns": columns})
+
+    return valid_tables
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -252,8 +308,7 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _validated_staging_tables(ds)
         if not tables_meta_list:
             continue
 
@@ -304,7 +359,7 @@ def _try_staging_query(
         if not isinstance(columns_meta, list):
             columns_meta = []
         allowed_tables = frozenset(
-            (t.get("qualified") or "").replace('"', "").replace("`", "")
+            _normalize_qualified_identifier(t.get("qualified") or "")
             for t in tables_meta_list
             if isinstance(t, dict)
         )

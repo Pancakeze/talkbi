@@ -12,6 +12,14 @@ router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 _ALLOWED_SUFFIX = (".xlsx", ".xls", ".csv")
 
 
+def _assert_safe_client_connection_info(connection_info: dict) -> None:
+    if "staging" in connection_info:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="staging metadata can only be created by the upload pipeline",
+        )
+
+
 def _get_owned_source(db: Session, source_id: int, user: User) -> DataSource:
     ds = (
         db.query(DataSource)
@@ -46,6 +54,7 @@ def create_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _assert_safe_client_connection_info(payload.connection_info)
     item = DataSource(
         name=payload.name,
         source_type=payload.source_type,
