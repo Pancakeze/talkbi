@@ -49,6 +49,8 @@ def test_validate_sql_enforces_table_allowlist():
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
     with pytest.raises(ValueError):
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
+    with pytest.raises(ValueError):
+        validate_sql("SELECT 1", policy=policy)
 
 
 def test_validate_sql_enforces_schema_when_no_allowlist():
@@ -59,5 +61,11 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 
 
 def test_validate_sql_rejects_forbidden_function():
-    with pytest.raises(ValueError):
-        validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+    for sql in (
+        "SELECT pg_sleep(10) FROM t LIMIT 1",
+        "SELECT pg_read_file('/etc/passwd') FROM t LIMIT 1",
+        "SELECT readfile('/etc/passwd') FROM t LIMIT 1",
+        "SELECT load_extension('/tmp/ext') FROM t LIMIT 1",
+    ):
+        with pytest.raises(ValueError):
+            validate_sql(sql)

@@ -27,7 +27,16 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "lo_import",
+    "lo_export",
+    "dblink",
+    "dblink_connect",
+    "dblink_exec",
     "sqlite_sleep",
+    "readfile",
+    "load_extension",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
@@ -105,7 +114,7 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
+    if any(fn in words for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
@@ -116,6 +125,8 @@ def validate_sql(
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
+        if not tables:
+            raise ValueError("A query table is required.")
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:

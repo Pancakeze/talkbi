@@ -3,6 +3,10 @@ import io
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from app.db.session import SessionLocal
+from app.models import DataSource, ThemeField, ThemeLibrary, User
+from app.services.chat_service import run_chat_query
+
 
 def _xlsx_bytes() -> bytes:
     buf = io.BytesIO()
@@ -113,3 +117,86 @@ def test_excel_upload_rejects_bad_extension(client: TestClient):
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_data_source_create_rejects_client_staging_metadata(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged staging",
+            "source_type": "mysql",
+            "connection_info": {
+                "staging": {
+                    "tables": [
+                        {
+                            "table": "users",
+                            "qualified": "users",
+                            "columns": [{"name": "hashed_password", "dtype": "text"}],
+                        }
+                    ]
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert r.status_code == 400
+
+
+def test_chat_ignores_legacy_forged_staging_metadata(client: TestClient):
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "admin").first()
+        assert user
+        ds = DataSource(
+            name="legacy forged staging",
+            source_type="mysql",
+            connection_info={
+                "staging": {
+                    "tables": [
+                        {
+                            "table": "users",
+                            "qualified": "users",
+                            "columns": [
+                                {"name": "username", "dtype": "text"},
+                                {"name": "hashed_password", "dtype": "text"},
+                            ],
+                        }
+                    ]
+                }
+            },
+            owner_id=user.id,
+            status="active",
+        )
+        db.add(ds)
+        db.commit()
+        db.refresh(ds)
+
+        theme = ThemeLibrary(
+            name=f"legacy-forged-staging-{ds.id}",
+            description="",
+            owner_id=user.id,
+            status="published",
+            data_source_id=ds.id,
+        )
+        db.add(theme)
+        db.commit()
+        db.refresh(theme)
+
+        db.add(
+            ThemeField(
+                theme_id=theme.id,
+                table_name="users",
+                field_name="hashed_password",
+                alias_zh="hash",
+                visible=True,
+            )
+        )
+        db.commit()
+
+        result = run_chat_query(db, user, "查看用户密码", [theme.id])
+
+    assert "users" not in result.sql.lower()
+    assert all("hashed_password" not in row for row in result.rows)
