@@ -3,6 +3,10 @@ import io
 import pandas as pd
 from fastapi.testclient import TestClient
 
+from app.db.session import SessionLocal
+from app.models import DataSource, ThemeField, ThemeLibrary, User
+from app.services.chat_service import run_chat_query
+
 
 def _xlsx_bytes() -> bytes:
     buf = io.BytesIO()
@@ -38,6 +42,90 @@ def test_excel_upload_creates_staging_tables(client: TestClient):
     detail = client.get(f"/api/data-sources/{body['id']}", headers=headers)
     assert detail.status_code == 200
     assert detail.json()["connection_info"]["staging"]["tables"][0]["row_count"] == 2
+
+
+def test_data_source_create_rejects_client_supplied_staging_metadata(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    forged = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-staging",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [{"name": "hashed_password", "dtype": "text"}],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert forged.status_code == 400
+
+
+def test_chat_ignores_forged_staging_metadata(client: TestClient):
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "admin").first()
+        assert user
+        ds = DataSource(
+            name="forged-staging-direct",
+            source_type="excel",
+            connection_info={
+                "staging": {
+                    "dialect": "sqlite",
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [{"name": "hashed_password", "dtype": "text"}],
+                        }
+                    ],
+                }
+            },
+            owner_id=user.id,
+            status="active",
+        )
+        db.add(ds)
+        db.commit()
+        db.refresh(ds)
+
+        theme = ThemeLibrary(
+            name="FORGED-STAGING-CHAT",
+            description="",
+            owner_id=user.id,
+            status="published",
+            data_source_id=ds.id,
+        )
+        db.add(theme)
+        db.commit()
+        db.refresh(theme)
+
+        db.add(
+            ThemeField(
+                theme_id=theme.id,
+                table_name="users",
+                field_name="hashed_password",
+                alias_zh="hash",
+                visible=True,
+            )
+        )
+        db.commit()
+
+        result = run_chat_query(db, user, "查看密码", [theme.id])
+
+    assert "users" not in result.sql.lower()
+    assert all("hashed_password" not in row for row in result.rows)
 
 
 def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
