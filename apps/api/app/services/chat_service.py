@@ -15,6 +15,7 @@ from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_STAGING_TABLE_RE = re.compile(r"^ds_(\d+)_[a-z0-9_]+$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +115,33 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _expected_staging_qualified(table_name: str) -> str:
+    if engine.dialect.name == "postgresql":
+        return f'"staging"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _is_trusted_staging_meta(ds: DataSource, meta: object) -> bool:
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(meta, dict):
+        return False
+
+    table_name = meta.get("table")
+    qualified = meta.get("qualified")
+    if not isinstance(table_name, str) or not isinstance(qualified, str):
+        return False
+
+    match = _STAGING_TABLE_RE.fullmatch(table_name)
+    if not match or match.group(1) != str(ds.id):
+        return False
+
+    expected_schema = "staging" if engine.dialect.name == "postgresql" else None
+    if meta.get("schema") != expected_schema:
+        return False
+
+    return qualified == _expected_staging_qualified(table_name)
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -257,7 +285,12 @@ def _try_staging_query(
         if not tables_meta_list:
             continue
 
-        tables_by_name = {t["table"]: t for t in tables_meta_list}
+        trusted_tables = [t for t in tables_meta_list if _is_trusted_staging_meta(ds, t)]
+        if not trusted_tables:
+            logger.warning("No trusted staging tables for data source %s", ds.id)
+            continue
+
+        tables_by_name = {t["table"]: t for t in trusted_tables}
         fields = (
             db.query(ThemeField)
             .filter(ThemeField.theme_id == theme.id)
@@ -286,7 +319,7 @@ def _try_staging_query(
                 break
 
         if not chosen_table:
-            first = tables_meta_list[0]
+            first = trusted_tables[0]
             if isinstance(first, dict) and first.get("table") and first.get("columns"):
                 chosen_table = str(first["table"])
                 chosen_cols = [
@@ -305,7 +338,7 @@ def _try_staging_query(
             columns_meta = []
         allowed_tables = frozenset(
             (t.get("qualified") or "").replace('"', "").replace("`", "")
-            for t in tables_meta_list
+            for t in trusted_tables
             if isinstance(t, dict)
         )
         col_sql = ", ".join(f'"{c}"' for c in chosen_cols)
