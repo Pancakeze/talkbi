@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import settings
+from app.core.config import DEFAULT_SECRET_KEY, settings
 from app.core.errors import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.db.base import Base
@@ -22,11 +22,28 @@ def _ensure_sqlite_schema() -> None:
         Base.metadata.create_all(bind=engine)
 
 
+def _is_production_like_environment() -> bool:
+    return settings.environment.lower() in {"staging", "production"}
+
+
+def _assert_safe_runtime_config() -> None:
+    if _is_production_like_environment() and settings.secret_key == DEFAULT_SECRET_KEY:
+        raise RuntimeError("SECRET_KEY must be overridden for staging/production.")
+
+
+def _should_seed_demo_data() -> bool:
+    return settings.environment.lower() in {"development", "test"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _assert_safe_runtime_config()
     _ensure_sqlite_schema()
-    with SessionLocal() as db:
-        seed_data(db)
+    if _should_seed_demo_data():
+        with SessionLocal() as db:
+            seed_data(db)
+    else:
+        logger.info("Skipping demo account seed in %s environment.", settings.environment)
     yield
 
 
