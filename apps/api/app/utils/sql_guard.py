@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -27,6 +28,9 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "readfile",
+    "load_extension",
     "sqlite_sleep",
 )
 
@@ -117,17 +121,19 @@ def validate_sql(
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
+        if not tables:
+            raise ValueError("Allowed table query must reference a table.")
         for t in tables:
             if t not in norm_allowed:
                 raise ValueError("Table is not allowed.")
-    else:
-        # Schema check when table allowlist isn't provided:
-        # allow bare table name (no schema) for sqlite, but if schema is present enforce it.
-        for t in tables:
-            if "." in t:
-                schema = t.split(".", 1)[0]
-                if schema not in policy.allowed_schemas:
-                    raise ValueError("Schema is not allowed.")
+
+    # Allow bare table names for sqlite, but if schema is present enforce it even
+    # when a caller also supplied an explicit table allowlist.
+    for t in tables:
+        if "." in t:
+            schema = t.split(".", 1)[0]
+            if schema not in policy.allowed_schemas:
+                raise ValueError("Schema is not allowed.")
 
 
 

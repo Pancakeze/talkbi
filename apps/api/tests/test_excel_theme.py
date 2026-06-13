@@ -107,6 +107,74 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_forged_staging_metadata(client: TestClient):
+    from app.db.session import SessionLocal
+    from app.models import DataSource, User
+
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "admin").first()
+        assert user
+        forged = DataSource(
+            name="forged-users-table",
+            source_type="excel",
+            connection_info={
+                "staging": {
+                    "tables": [
+                        {
+                            "table": "users",
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ]
+                }
+            },
+            owner_id=user.id,
+            status="active",
+        )
+        db.add(forged)
+        db.commit()
+        db.refresh(forged)
+        ds_id = forged.id
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": f"FORGED-STAGING-{ds_id}", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={
+                "table_name": "users",
+                "field_name": col,
+                "alias_zh": col,
+                "visible": True,
+            },
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看用户密码", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert '"users"' not in data["sql"]
+    assert all("hashed_password" not in row for row in data["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
