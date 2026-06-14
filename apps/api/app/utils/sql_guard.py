@@ -15,6 +15,7 @@ _FORBIDDEN_KEYWORDS = (
     "insert",
     "create",
     "replace",
+    "into",
     "grant",
     "revoke",
     # execution / side effects
@@ -27,6 +28,14 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "lo_import",
+    "dblink",
+    "load_extension",
+    "readfile",
     "sqlite_sleep",
 )
 
@@ -117,6 +126,8 @@ def validate_sql(
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
+        if not tables:
+            raise ValueError("Query must reference an allowed table.")
         for t in tables:
             if t not in norm_allowed:
                 raise ValueError("Table is not allowed.")
