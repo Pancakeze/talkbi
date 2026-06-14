@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import settings
+from app.core.config import settings, validate_runtime_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.db.base import Base
@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     configure_logging()
+    validate_runtime_settings()
     app = FastAPI(
         title=settings.app_name,
         version=settings.api_version,
