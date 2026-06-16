@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -26,12 +27,24 @@ _FORBIDDEN_KEYWORDS = (
 )
 
 _FORBIDDEN_FUNCTIONS = (
+    "load_extension",
+    "lo_export",
+    "lo_import",
+    "pg_ls_dir",
+    "pg_read_binary_file",
+    "pg_read_file",
+    "pg_stat_file",
     "pg_sleep",
+    "readfile",
     "sqlite_sleep",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_CLAUSE_RE = re.compile(
+    r"\bfrom\b\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\boffset\b|\bunion\b|\bintersect\b|\bexcept\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -58,6 +71,33 @@ def _extract_tables(sql_text: str) -> set[str]:
             continue
         tables.add(ident)
     return tables
+
+
+def _contains_top_level_comma(segment: str) -> bool:
+    depth = 0
+    quote: Optional[str] = None
+    i = 0
+    while i < len(segment):
+        ch = segment[i]
+        if quote:
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def _has_comma_join(sql_text: str) -> bool:
+    return any(_contains_top_level_comma(match.group(1)) for match in _FROM_CLAUSE_RE.finditer(sql_text))
 
 
 def _extract_limit(sql_text: str) -> Optional[int]:
@@ -105,8 +145,10 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
+    if any(re.search(rf"\b{re.escape(fn)}\s*\(", low) for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
+    if _has_comma_join(cleaned):
+        raise ValueError("Comma joins are not allowed.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)
@@ -116,6 +158,8 @@ def validate_sql(
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
+        if not tables:
+            raise ValueError("Query must reference an allowed table.")
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:

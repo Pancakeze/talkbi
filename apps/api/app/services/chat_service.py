@@ -9,12 +9,14 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +116,82 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _normalize_sql_ident(raw: str) -> str:
+    return raw.strip().replace('"', "").replace("`", "")
+
+
+def _quoted_table_name(table_name: str) -> str:
+    if engine.dialect.name == "postgresql":
+        return f'"{STAGING_SCHEMA}"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _validated_staging_tables(ds: DataSource) -> dict[str, dict]:
+    if ds.source_type != "excel" or ds.status != "active":
+        return {}
+    if not isinstance(ds.connection_info, dict):
+        return {}
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return {}
+    dialect = engine.dialect.name
+    if staging.get("dialect") != dialect:
+        return {}
+
+    raw_tables = staging.get("tables")
+    if not isinstance(raw_tables, list):
+        return {}
+
+    expected_prefix = f"ds_{ds.id}_"
+    validated: dict[str, dict] = {}
+    for raw_meta in raw_tables:
+        if not isinstance(raw_meta, dict):
+            continue
+
+        table_name = raw_meta.get("table")
+        if (
+            not isinstance(table_name, str)
+            or not table_name.startswith(expected_prefix)
+            or not _SAFE_IDENTIFIER_RE.fullmatch(table_name)
+        ):
+            continue
+
+        if dialect == "postgresql":
+            if raw_meta.get("schema") != STAGING_SCHEMA:
+                continue
+            expected_qualified = f"{STAGING_SCHEMA}.{table_name}"
+        else:
+            if raw_meta.get("schema") not in (None, ""):
+                continue
+            expected_qualified = table_name
+
+        qualified = raw_meta.get("qualified")
+        if not isinstance(qualified, str) or _normalize_sql_ident(qualified) != expected_qualified:
+            continue
+
+        raw_columns = raw_meta.get("columns")
+        if not isinstance(raw_columns, list):
+            continue
+        columns = [
+            c
+            for c in raw_columns
+            if isinstance(c, dict)
+            and isinstance(c.get("name"), str)
+            and _SAFE_IDENTIFIER_RE.fullmatch(c["name"])
+        ]
+        if not columns:
+            continue
+
+        meta = dict(raw_meta)
+        meta["columns"] = columns
+        meta["qualified"] = _quoted_table_name(table_name)
+        validated[table_name] = meta
+
+    return validated
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -249,15 +327,14 @@ def _try_staging_query(
             )
             .first()
         )
-        if not ds or not isinstance(ds.connection_info, dict):
+        if not ds:
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
-        if not tables_meta_list:
+        tables_by_name = _validated_staging_tables(ds)
+        if not tables_by_name:
             continue
 
-        tables_by_name = {t["table"]: t for t in tables_meta_list}
+        tables_meta_list = list(tables_by_name.values())
         fields = (
             db.query(ThemeField)
             .filter(ThemeField.theme_id == theme.id)
