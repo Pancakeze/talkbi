@@ -9,12 +9,14 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +116,71 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _normalize_table_identifier(identifier: str) -> str:
+    return identifier.strip().replace('"', "").replace("`", "")
+
+
+def _expected_staging_qualified(table_name: str) -> str:
+    if engine.dialect.name == "postgresql":
+        return f'"{STAGING_SCHEMA}"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _trusted_staging_tables(ds: DataSource) -> dict[str, dict]:
+    """
+    Treat DataSource.connection_info as untrusted user-writable JSON.
+    Only accept metadata that matches tables created by materialize_excel_staging().
+    """
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(ds.connection_info, dict):
+        return {}
+
+    staging = ds.connection_info.get("staging") or {}
+    if not isinstance(staging, dict):
+        return {}
+
+    table_prefix = f"ds_{ds.id}_"
+    trusted: dict[str, dict] = {}
+    for raw_meta in staging.get("tables") or []:
+        if not isinstance(raw_meta, dict):
+            continue
+
+        table_name = raw_meta.get("table")
+        if (
+            not isinstance(table_name, str)
+            or not table_name.startswith(table_prefix)
+            or not _SAFE_IDENTIFIER_RE.fullmatch(table_name)
+        ):
+            continue
+
+        expected_qualified = _expected_staging_qualified(table_name)
+        if raw_meta.get("qualified") != expected_qualified:
+            continue
+
+        if engine.dialect.name == "postgresql" and raw_meta.get("schema") != STAGING_SCHEMA:
+            continue
+
+        columns: list[dict] = []
+        for raw_column in raw_meta.get("columns") or []:
+            if not isinstance(raw_column, dict):
+                continue
+            column_name = raw_column.get("name")
+            if not isinstance(column_name, str) or not _SAFE_IDENTIFIER_RE.fullmatch(column_name):
+                continue
+            columns.append({"name": column_name, "dtype": str(raw_column.get("dtype", ""))})
+
+        if not columns:
+            continue
+
+        trusted[table_name] = {
+            **raw_meta,
+            "table": table_name,
+            "qualified": expected_qualified,
+            "columns": columns,
+        }
+
+    return trusted
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -252,12 +319,11 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
-        if not tables_meta_list:
+        tables_by_name = _trusted_staging_tables(ds)
+        if not tables_by_name:
             continue
 
-        tables_by_name = {t["table"]: t for t in tables_meta_list}
+        tables_meta_list = list(tables_by_name.values())
         fields = (
             db.query(ThemeField)
             .filter(ThemeField.theme_id == theme.id)
@@ -278,7 +344,7 @@ def _try_staging_query(
             meta = tables_by_name.get(tname)
             if not meta:
                 continue
-            allowed_meta = {c["name"] for c in meta.get("columns", [])}
+            allowed_meta = {c["name"] for c in meta.get("columns", []) if isinstance(c, dict)}
             cols = [f.field_name for f in flist if f.field_name in allowed_meta]
             if cols:
                 chosen_table = tname
@@ -304,7 +370,7 @@ def _try_staging_query(
         if not isinstance(columns_meta, list):
             columns_meta = []
         allowed_tables = frozenset(
-            (t.get("qualified") or "").replace('"', "").replace("`", "")
+            _normalize_table_identifier(t.get("qualified") or "")
             for t in tables_meta_list
             if isinstance(t, dict)
         )
