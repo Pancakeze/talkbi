@@ -10,6 +10,30 @@ from app.services.excel_service import MAX_UPLOAD_BYTES, materialize_excel_stagi
 router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 
 _ALLOWED_SUFFIX = (".xlsx", ".xls", ".csv")
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
+
+
+def _read_upload_limited(file: UploadFile) -> bytes:
+    raw = bytearray()
+
+    while True:
+        read_size = min(_UPLOAD_READ_CHUNK_BYTES, MAX_UPLOAD_BYTES + 1 - len(raw))
+        if read_size <= 0:
+            break
+        chunk = file.file.read(read_size)
+        if not chunk:
+            return bytes(raw)
+        raw.extend(chunk)
+        if len(raw) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="File exceeds upload limit.",
+            )
+
+    raise HTTPException(
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        detail="File exceeds upload limit.",
+    )
 
 
 def _get_owned_source(db: Session, source_id: int, user: User) -> DataSource:
@@ -73,12 +97,7 @@ def upload_excel(
             detail="Only .xlsx, .xls, or .csv files are accepted.",
         )
 
-    raw = file.file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds upload limit.",
-        )
+    raw = _read_upload_limited(file)
 
     item = DataSource(
         name=filename,

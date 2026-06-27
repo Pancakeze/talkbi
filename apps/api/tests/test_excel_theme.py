@@ -1,6 +1,8 @@
 import io
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -113,3 +115,31 @@ def test_excel_upload_rejects_bad_extension(client: TestClient):
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_upload_reader_rejects_oversized_file_without_full_buffer(monkeypatch):
+    from app.api.routes import data_sources
+
+    class TrackingFile:
+        def __init__(self, payload: bytes):
+            self._buffer = io.BytesIO(payload)
+            self.bytes_read = 0
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self._buffer.read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+    class Upload:
+        def __init__(self, payload: bytes):
+            self.file = TrackingFile(payload)
+
+    monkeypatch.setattr(data_sources, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(data_sources, "_UPLOAD_READ_CHUNK_BYTES", 4)
+    upload = Upload(b"x" * 25)
+
+    with pytest.raises(HTTPException) as exc_info:
+        data_sources._read_upload_limited(upload)  # noqa: SLF001
+
+    assert exc_info.value.status_code == 413
+    assert upload.file.bytes_read == 11
