@@ -4,6 +4,12 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 
+def _login(client: TestClient, username: str = "admin", password: str = "admin123") -> str:
+    login = client.post("/api/auth/login", json={"username": username, "password": password})
+    assert login.status_code == 200, login.text
+    return login.json()["access_token"]
+
+
 def _xlsx_bytes() -> bytes:
     buf = io.BytesIO()
     df = pd.DataFrame(
@@ -19,8 +25,7 @@ def _xlsx_bytes() -> bytes:
 
 
 def test_excel_upload_creates_staging_tables(client: TestClient):
-    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
-    token = login.json()["access_token"]
+    token = _login(client)
     headers = {"Authorization": f"Bearer {token}"}
 
     files = {"file": ("traffic.xlsx", _xlsx_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
@@ -41,8 +46,7 @@ def test_excel_upload_creates_staging_tables(client: TestClient):
 
 
 def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
-    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
-    token = login.json()["access_token"]
+    token = _login(client)
     headers = {"Authorization": f"Bearer {token}"}
 
     files = {"file": ("t.xlsx", _xlsx_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
@@ -107,9 +111,75 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_forged_staging_metadata_for_system_table(client: TestClient):
+    token = _login(client, "analyst", "analyst123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ds = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-users-ds",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert ds.status_code == 200, ds.text
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={
+            "name": "forged-users-theme",
+            "description": "",
+            "data_source_id": ds.json()["id"],
+        },
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        field = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={
+                "table_name": "users",
+                "field_name": col,
+                "alias_zh": col,
+                "visible": True,
+            },
+            headers=headers,
+        )
+        assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "list usernames and password hashes", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert "users" not in data["sql"].lower()
+    assert "hashed_password" not in data["sql"].lower()
+    assert all("hashed_password" not in row for row in data["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
-    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
-    token = login.json()["access_token"]
+    token = _login(client)
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400

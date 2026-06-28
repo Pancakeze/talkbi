@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -27,11 +28,18 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "readfile",
+    "load_extension",
     "sqlite_sleep",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_CLAUSE_RE = re.compile(
+    r"\bfrom\b\s+(.*?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|\bintersect\b|\bexcept\b|\boffset\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -68,6 +76,34 @@ def _extract_limit(sql_text: str) -> Optional[int]:
         return int(m.group(1))
     except ValueError:
         return None
+
+
+def _has_top_level_comma(segment: str) -> bool:
+    depth = 0
+    in_single = False
+    in_double = False
+
+    i = 0
+    while i < len(segment):
+        ch = segment[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth > 0:
+                depth -= 1
+            elif ch == "," and depth == 0:
+                return True
+        i += 1
+
+    return False
+
+
+def _has_comma_join(sql_text: str) -> bool:
+    return any(_has_top_level_comma(match.group(1)) for match in _FROM_CLAUSE_RE.finditer(sql_text))
 
 
 @dataclass(frozen=True)
@@ -107,6 +143,8 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
     if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
+    if _has_comma_join(cleaned):
+        raise ValueError("Comma joins are not allowed.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)

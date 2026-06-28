@@ -58,6 +58,27 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
         validate_sql('SELECT a FROM "public"."users" LIMIT 10', policy=policy)
 
 
+def test_validate_sql_rejects_comma_join_allowlist_bypass():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql(
+            'SELECT u.username FROM "staging"."ds_1_t" t, users u LIMIT 10',
+            policy=policy,
+        )
+
+
+def test_validate_sql_rejects_select_into_mutation():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a INTO copied_table FROM "staging"."ds_1_t" LIMIT 10')
+
+
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql("SELECT readfile('/etc/passwd') FROM t LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql("SELECT pg_read_file('/etc/passwd') FROM t LIMIT 1")
