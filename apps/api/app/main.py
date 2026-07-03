@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import settings
+from app.core.config import settings, validate_runtime_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.db.base import Base
@@ -22,16 +22,22 @@ def _ensure_sqlite_schema() -> None:
         Base.metadata.create_all(bind=engine)
 
 
+def _should_seed_demo_data() -> bool:
+    return settings.environment.strip().lower() in {"development", "test"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _ensure_sqlite_schema()
-    with SessionLocal() as db:
-        seed_data(db)
+    if _should_seed_demo_data():
+        with SessionLocal() as db:
+            seed_data(db)
     yield
 
 
 def create_app() -> FastAPI:
     configure_logging()
+    validate_runtime_settings()
     app = FastAPI(
         title=settings.app_name,
         version=settings.api_version,
