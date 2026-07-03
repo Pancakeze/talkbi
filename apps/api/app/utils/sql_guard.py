@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -27,11 +28,25 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "lo_import",
+    "lo_export",
+    "load_extension",
+    "readfile",
+    "dblink",
+    "dblink_connect",
+    "dblink_exec",
     "sqlite_sleep",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
-_FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_CLAUSE_RE = re.compile(
+    r"\bfrom\b\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|\bexcept\b|\bintersect\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_JOIN_RE = re.compile(r"\bjoin\b\s+([^\s,;]+)", re.IGNORECASE)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -49,14 +64,64 @@ def _normalize_ident(token: str) -> str:
     return t
 
 
+def _split_top_level_commas(sql_fragment: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    quote: str | None = None
+    i = 0
+
+    while i < len(sql_fragment):
+        ch = sql_fragment[i]
+        if quote:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
+
+def _first_relation_token(fragment: str) -> str | None:
+    stripped = fragment.strip()
+    if not stripped or stripped.startswith("("):
+        return None
+    match = re.match(r"([^\s,;]+)", stripped)
+    if not match:
+        return None
+    return match.group(1)
+
+
 def _extract_tables(sql_text: str) -> set[str]:
     tables: set[str] = set()
-    for _, raw in _FROM_JOIN_RE.findall(sql_text):
-        ident = _normalize_ident(raw)
-        # Ignore subqueries: FROM (SELECT ...)
-        if ident.startswith("("):
-            continue
-        tables.add(ident)
+    for clause in _FROM_CLAUSE_RE.findall(sql_text):
+        for part in _split_top_level_commas(clause):
+            raw = _first_relation_token(part)
+            if raw:
+                tables.add(_normalize_ident(raw))
+            for joined in _JOIN_RE.findall(part):
+                ident = _normalize_ident(joined)
+                if not ident.startswith("("):
+                    tables.add(ident)
     return tables
 
 
@@ -105,8 +170,9 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
-        raise ValueError("Unsafe SQL detected.")
+    for fn in _FORBIDDEN_FUNCTIONS:
+        if re.search(rf"\b{re.escape(fn)}\s*\(", low):
+            raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)
@@ -116,6 +182,8 @@ def validate_sql(
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
+        if not tables:
+            raise ValueError("At least one allowed table is required.")
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:
