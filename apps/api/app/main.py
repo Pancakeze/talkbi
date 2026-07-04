@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import settings
+from app.core.config import DEFAULT_SECRET_KEY, settings
 from app.core.errors import register_exception_handlers
 from app.core.logging_config import configure_logging
 from app.db.base import Base
@@ -15,6 +15,9 @@ from app.models import entities  # noqa: F401 — register models
 
 logger = logging.getLogger(__name__)
 
+_PRODUCTION_ENVIRONMENTS = {"staging", "production"}
+_SEED_ENVIRONMENTS = {"development", "test"}
+
 
 def _ensure_sqlite_schema() -> None:
     """Local SQLite: create tables when not using Alembic."""
@@ -22,11 +25,19 @@ def _ensure_sqlite_schema() -> None:
         Base.metadata.create_all(bind=engine)
 
 
+def _validate_runtime_settings() -> None:
+    environment = settings.environment.lower()
+    if environment in _PRODUCTION_ENVIRONMENTS and settings.secret_key == DEFAULT_SECRET_KEY:
+        raise RuntimeError("SECRET_KEY must be set to a non-default value outside development.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _validate_runtime_settings()
     _ensure_sqlite_schema()
-    with SessionLocal() as db:
-        seed_data(db)
+    if settings.environment.lower() in _SEED_ENVIRONMENTS:
+        with SessionLocal() as db:
+            seed_data(db)
     yield
 
 

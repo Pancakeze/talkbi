@@ -1,12 +1,15 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_SECRET_KEY = "talkbi-dev-secret-key"
+
+
 class Settings(BaseSettings):
     app_name: str = "TalkBI API"
     api_version: str = "0.1.0"
     environment: str = "development"  # development | staging | production
     api_prefix: str = "/api"
-    secret_key: str = "talkbi-dev-secret-key"
+    secret_key: str = DEFAULT_SECRET_KEY
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     # 本地默认 SQLite；Docker / 生产通过环境变量 DATABASE_URL 覆盖为 PostgreSQL
