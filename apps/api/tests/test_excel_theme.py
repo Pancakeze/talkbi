@@ -107,9 +107,95 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_forged_staging_metadata_for_system_table(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ds = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-users-source",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "schema": None,
+                    "tables": [
+                        {
+                            "sheet_name": "Users",
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert ds.status_code == 200, ds.text
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={
+            "name": "forged-users-theme",
+            "description": "",
+            "data_source_id": ds.json()["id"],
+        },
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    field = client.post(
+        f"/api/theme-libraries/{theme_id}/fields",
+        json={
+            "table_name": "users",
+            "field_name": "hashed_password",
+            "alias_zh": "hash",
+            "visible": True,
+        },
+        headers=headers,
+    )
+    assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看密码哈希", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    body = chat.json()
+    assert "users" not in body["sql"].lower()
+    assert all("hashed_password" not in row for row in body["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_excel_upload_rejects_oversized_file_before_materializing(client: TestClient, monkeypatch):
+    from app.api.routes import data_sources
+
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def fail_materialize(*args, **kwargs):
+        raise AssertionError("oversized uploads must not reach materialization")
+
+    monkeypatch.setattr(data_sources, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(data_sources, "materialize_excel_staging", fail_materialize)
+
+    files = {"file": ("too-large.csv", b"01234567890", "text/csv")}
+    r = client.post("/api/data-sources/excel/upload", files=files, headers=headers)
+    assert r.status_code == 413
