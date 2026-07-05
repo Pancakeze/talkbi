@@ -28,10 +28,22 @@ _FORBIDDEN_KEYWORDS = (
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
     "sqlite_sleep",
+    "readfile",
+    "load_extension",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
-_FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_JOIN_CLAUSE_RE = re.compile(
+    r"\b(from|join)\b\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|\bexcept\b|\bintersect\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_JOIN_SPLIT_RE = re.compile(r"\b(?:inner|left|right|full|cross)?\s*join\b", re.IGNORECASE)
+_ON_SPLIT_RE = re.compile(r"\bon\b", re.IGNORECASE)
+_SELECT_INTO_RE = re.compile(r"\bselect\b.+\binto\b", re.IGNORECASE | re.DOTALL)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -42,8 +54,14 @@ def _strip_sql(sql_text: str) -> str:
 def _normalize_ident(token: str) -> str:
     # Keep dots but strip quoting chars.
     t = token.strip()
+    if not t:
+        return t
+    if t.startswith("("):
+        raise ValueError("Subqueries are not allowed in table positions.")
+    t = _ON_SPLIT_RE.split(t, maxsplit=1)[0].strip()
+    t = t.split()[0] if t.split() else t
     # remove trailing punctuation like "," or ")"
-    t = t.rstrip(",")
+    t = t.rstrip(",)")
     # Strip common quoting.
     t = t.replace('"', "").replace("`", "")
     return t
@@ -51,12 +69,12 @@ def _normalize_ident(token: str) -> str:
 
 def _extract_tables(sql_text: str) -> set[str]:
     tables: set[str] = set()
-    for _, raw in _FROM_JOIN_RE.findall(sql_text):
-        ident = _normalize_ident(raw)
-        # Ignore subqueries: FROM (SELECT ...)
-        if ident.startswith("("):
-            continue
-        tables.add(ident)
+    for _, clause in _FROM_JOIN_CLAUSE_RE.findall(sql_text):
+        for join_part in _JOIN_SPLIT_RE.split(clause):
+            for raw in join_part.split(","):
+                ident = _normalize_ident(raw)
+                if ident:
+                    tables.add(ident)
     return tables
 
 
@@ -101,11 +119,13 @@ def validate_sql(
         raise ValueError("Multiple statements are not allowed.")
     if "--" in cleaned or "/*" in cleaned or "*/" in cleaned:
         raise ValueError("SQL comments are not allowed.")
+    if _SELECT_INTO_RE.search(cleaned):
+        raise ValueError("Unsafe SQL detected.")
 
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
+    if any(re.search(rf"\b{re.escape(fn)}\s*\(", low) for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
