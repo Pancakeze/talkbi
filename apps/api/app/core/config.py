@@ -1,12 +1,16 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_SECRET_KEY = "talkbi-dev-secret-key"
+PRODUCTION_ENVIRONMENTS = {"staging", "production"}
+
+
 class Settings(BaseSettings):
     app_name: str = "TalkBI API"
     api_version: str = "0.1.0"
     environment: str = "development"  # development | staging | production
     api_prefix: str = "/api"
-    secret_key: str = "talkbi-dev-secret-key"
+    secret_key: str = DEFAULT_SECRET_KEY
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     # 本地默认 SQLite；Docker / 生产通过环境变量 DATABASE_URL 覆盖为 PostgreSQL
@@ -21,3 +25,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def validate_runtime_settings() -> None:
+    env = (settings.environment or "").lower()
+    if env in PRODUCTION_ENVIRONMENTS and settings.secret_key == DEFAULT_SECRET_KEY:
+        raise RuntimeError("SECRET_KEY must be set to a non-default value in staging/production.")
