@@ -12,6 +12,16 @@ router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 _ALLOWED_SUFFIX = (".xlsx", ".xls", ".csv")
 
 
+def _read_bounded_upload(file: UploadFile) -> bytes:
+    raw = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File exceeds upload limit.",
+        )
+    return raw
+
+
 def _get_owned_source(db: Session, source_id: int, user: User) -> DataSource:
     ds = (
         db.query(DataSource)
@@ -73,12 +83,7 @@ def upload_excel(
             detail="Only .xlsx, .xls, or .csv files are accepted.",
         )
 
-    raw = file.file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds upload limit.",
-        )
+    raw = _read_bounded_upload(file)
 
     item = DataSource(
         name=filename,
