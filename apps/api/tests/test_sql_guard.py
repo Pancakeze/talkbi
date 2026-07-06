@@ -49,6 +49,12 @@ def test_validate_sql_enforces_table_allowlist():
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
     with pytest.raises(ValueError):
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
+    with pytest.raises(ValueError):
+        validate_sql('SELECT t.a FROM "staging"."ds_1_t" t, users u LIMIT 10', policy=policy)
+    with pytest.raises(ValueError):
+        validate_sql('SELECT (SELECT hashed_password FROM users LIMIT 1) AS h FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * FROM (SELECT * FROM "staging"."ds_1_t" LIMIT 10) x LIMIT 10', policy=policy)
 
 
 def test_validate_sql_enforces_schema_when_no_allowlist():
@@ -61,3 +67,12 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql("SELECT readfile('/etc/passwd') FROM t LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql("SELECT pg_read_file('/etc/passwd') FROM t LIMIT 1")
+
+
+def test_validate_sql_rejects_select_into():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a INTO "staging"."copy" FROM "staging"."ds_1_t" LIMIT 1')

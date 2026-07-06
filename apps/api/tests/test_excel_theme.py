@@ -1,6 +1,9 @@
 import io
+from types import SimpleNamespace
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -107,9 +110,79 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_forged_staging_metadata_for_system_table(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "analyst", "password": "analyst123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ds = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-users-staging",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert ds.status_code == 200, ds.text
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "forged-users-theme", "description": "", "data_source_id": ds.json()["id"]},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        field = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": "users", "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "show users", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert '"users"' not in data["sql"]
+    assert all("hashed_password" not in row for row in data["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_bounded_upload_rejects_after_limit_without_full_read(monkeypatch):
+    from app.api.routes import data_sources as data_source_routes
+
+    monkeypatch.setattr(data_source_routes, "MAX_UPLOAD_BYTES", 4)
+    upload = SimpleNamespace(file=io.BytesIO(b"12345"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        data_source_routes._read_bounded_upload(upload)
+
+    assert getattr(exc_info.value, "status_code", None) == 413
