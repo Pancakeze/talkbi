@@ -1,6 +1,8 @@
 import io
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -107,9 +109,102 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_forged_staging_metadata_for_system_table(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    forged_source = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-staging-source",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert forged_source.status_code == 200, forged_source.text
+    ds_id = forged_source.json()["id"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "伪造 staging 元数据测试", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        field = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={
+                "table_name": "users",
+                "field_name": col,
+                "alias_zh": col,
+                "visible": True,
+            },
+            headers=headers,
+        )
+        assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看用户密码哈希", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert "users" not in data["sql"].lower()
+    assert "hashed_password" not in data["sql"].lower()
+    assert all("hashed_password" not in row for row in data["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_upload_reader_rejects_oversized_file_without_full_buffer(monkeypatch):
+    from app.api.routes import data_sources
+
+    class TrackingFile:
+        def __init__(self, payload: bytes):
+            self._buffer = io.BytesIO(payload)
+            self.bytes_read = 0
+
+        def read(self, size: int = -1) -> bytes:
+            chunk = self._buffer.read(size)
+            self.bytes_read += len(chunk)
+            return chunk
+
+    class Upload:
+        def __init__(self, payload: bytes):
+            self.file = TrackingFile(payload)
+
+    monkeypatch.setattr(data_sources, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(data_sources, "_UPLOAD_READ_CHUNK_BYTES", 4)
+    upload = Upload(b"x" * 25)
+
+    with pytest.raises(HTTPException) as exc_info:
+        data_sources._read_upload_limited(upload)  # noqa: SLF001
+
+    assert exc_info.value.status_code == 413
+    assert upload.file.bytes_read == 11

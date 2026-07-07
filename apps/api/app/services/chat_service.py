@@ -9,12 +9,14 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +116,93 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _normalize_qualified_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.replace('"', "").replace("`", "").strip()
+
+
+def _safe_column_metadata(columns: object) -> list[dict]:
+    if not isinstance(columns, list):
+        return []
+
+    safe: list[dict] = []
+    seen: set[str] = set()
+    for col in columns:
+        if not isinstance(col, dict):
+            return []
+        name = col.get("name")
+        if not isinstance(name, str) or not _SAFE_IDENTIFIER_RE.fullmatch(name):
+            return []
+        if name in seen:
+            return []
+        seen.add(name)
+        safe.append({"name": name, "dtype": str(col.get("dtype", ""))})
+    return safe
+
+
+def _validated_staging_tables(ds: DataSource) -> list[dict]:
+    """
+    Data source metadata is writable through the CRUD API. Only trust entries
+    that match the physical Excel staging tables this backend creates.
+    """
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(ds.connection_info, dict):
+        return []
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return []
+
+    dialect = staging.get("dialect")
+    if dialect != engine.dialect.name:
+        return []
+
+    raw_tables = staging.get("tables")
+    if not isinstance(raw_tables, list):
+        return []
+
+    table_prefix = f"ds_{ds.id}_"
+    safe_tables: list[dict] = []
+    for table_meta in raw_tables:
+        if not isinstance(table_meta, dict):
+            return []
+
+        table = table_meta.get("table")
+        if not isinstance(table, str):
+            return []
+        if not table.startswith(table_prefix) or not _SAFE_IDENTIFIER_RE.fullmatch(table):
+            return []
+
+        columns = _safe_column_metadata(table_meta.get("columns"))
+        if not columns:
+            return []
+
+        if dialect == "postgresql":
+            if table_meta.get("schema") != STAGING_SCHEMA:
+                return []
+            expected_qualified = f"{STAGING_SCHEMA}.{table}"
+            qualified = f'"{STAGING_SCHEMA}"."{table}"'
+        else:
+            if table_meta.get("schema") is not None:
+                return []
+            expected_qualified = table
+            qualified = f'"{table}"'
+
+        if _normalize_qualified_identifier(table_meta.get("qualified")) != expected_qualified:
+            return []
+
+        safe_tables.append(
+            {
+                "table": table,
+                "qualified": qualified,
+                "columns": columns,
+            }
+        )
+
+    return safe_tables
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -249,11 +338,10 @@ def _try_staging_query(
             )
             .first()
         )
-        if not ds or not isinstance(ds.connection_info, dict):
+        if not ds:
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _validated_staging_tables(ds)
         if not tables_meta_list:
             continue
 
