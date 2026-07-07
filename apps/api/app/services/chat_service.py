@@ -2,19 +2,21 @@ import logging
 import re
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
@@ -114,6 +116,88 @@ def _sanitize_llm_sql(raw: str) -> str:
     # strip any trailing code fences
     s = re.sub(r"```$", "", s).strip()
     return s
+
+
+def _expected_qualified_name(dialect: str, table_name: str) -> tuple[Optional[str], str]:
+    if dialect == "postgresql":
+        return STAGING_SCHEMA, f'"{STAGING_SCHEMA}"."{table_name}"'
+    return None, f'"{table_name}"'
+
+
+def _validated_staging_tables(ds: DataSource) -> dict[str, dict]:
+    """
+    Trust only Excel staging metadata that matches server-created physical tables.
+    DataSource.connection_info is client-writable for generic sources, so the chat
+    SQL path must re-bind metadata to the data-source id and actual DB schema.
+    """
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(ds.connection_info, dict):
+        return {}
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict) or staging.get("dialect") != engine.dialect.name:
+        return {}
+
+    tables_meta = staging.get("tables")
+    if not isinstance(tables_meta, list):
+        return {}
+
+    inspector = inspect(engine)
+    dialect = engine.dialect.name
+    prefix = f"ds_{ds.id}_"
+    valid: dict[str, dict] = {}
+
+    for raw_meta in tables_meta:
+        if not isinstance(raw_meta, dict):
+            continue
+        table_name = raw_meta.get("table")
+        if (
+            not isinstance(table_name, str)
+            or not table_name.startswith(prefix)
+            or not _SAFE_IDENTIFIER_RE.fullmatch(table_name)
+        ):
+            continue
+
+        expected_schema, expected_qualified = _expected_qualified_name(dialect, table_name)
+        if raw_meta.get("schema") != expected_schema or raw_meta.get("qualified") != expected_qualified:
+            continue
+
+        try:
+            table_names = set(inspector.get_table_names(schema=expected_schema))
+            if table_name not in table_names:
+                continue
+            actual_columns = {
+                col["name"]
+                for col in inspector.get_columns(table_name, schema=expected_schema)
+                if isinstance(col.get("name"), str)
+            }
+        except Exception as exc:
+            logger.warning("Unable to inspect staging table %s: %s", table_name, exc)
+            continue
+
+        columns_meta = raw_meta.get("columns")
+        if not isinstance(columns_meta, list):
+            continue
+
+        safe_columns: list[dict] = []
+        for col in columns_meta:
+            if not isinstance(col, dict):
+                continue
+            name = col.get("name")
+            if isinstance(name, str) and name in actual_columns and _SAFE_IDENTIFIER_RE.fullmatch(name):
+                safe_columns.append({"name": name, "dtype": str(col.get("dtype", ""))})
+        if not safe_columns:
+            continue
+
+        valid[table_name] = {
+            **raw_meta,
+            "table": table_name,
+            "schema": expected_schema,
+            "qualified": expected_qualified,
+            "columns": safe_columns,
+        }
+
+    return valid
+
 
 def generate_sql_from_prompt(prompt: str, theme_ids: list[int]) -> str:
     if "相关" in prompt or "散点" in prompt:
@@ -252,12 +336,11 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_by_name = _validated_staging_tables(ds)
+        tables_meta_list = list(tables_by_name.values())
         if not tables_meta_list:
             continue
 
-        tables_by_name = {t["table"]: t for t in tables_meta_list}
         fields = (
             db.query(ThemeField)
             .filter(ThemeField.theme_id == theme.id)
