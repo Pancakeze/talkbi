@@ -12,6 +12,16 @@ router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 _ALLOWED_SUFFIX = (".xlsx", ".xls", ".csv")
 
 
+def _read_upload_limited(file: UploadFile) -> bytes:
+    raw = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(raw) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File exceeds upload limit.",
+        )
+    return raw
+
+
 def _get_owned_source(db: Session, source_id: int, user: User) -> DataSource:
     ds = (
         db.query(DataSource)
@@ -46,10 +56,13 @@ def create_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    connection_info = dict(payload.connection_info or {})
+    # Staging metadata is a server-created trust boundary from the Excel upload path.
+    connection_info.pop("staging", None)
     item = DataSource(
         name=payload.name,
         source_type=payload.source_type,
-        connection_info=payload.connection_info,
+        connection_info=connection_info,
         owner_id=current_user.id,
         status="active",
     )
@@ -73,12 +86,7 @@ def upload_excel(
             detail="Only .xlsx, .xls, or .csv files are accepted.",
         )
 
-    raw = file.file.read()
-    if len(raw) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="File exceeds upload limit.",
-        )
+    raw = _read_upload_limited(file)
 
     item = DataSource(
         name=filename,

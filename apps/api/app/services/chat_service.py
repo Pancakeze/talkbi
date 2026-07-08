@@ -2,6 +2,7 @@ import logging
 import re
 from typing import Optional
 
+from sqlalchemy import inspect
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -9,17 +10,98 @@ from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
 logger = logging.getLogger(__name__)
 
 _NUMERIC_HINTS = ("int", "float", "double", "decimal", "number")
+_SAFE_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
 def _is_numeric_dtype(dtype_str: str) -> bool:
     s = (dtype_str or "").lower()
     return any(x in s for x in _NUMERIC_HINTS)
+
+
+def _normalize_sql_identifier(value: str) -> str:
+    return value.replace('"', "").replace("`", "")
+
+
+def _expected_qualified_name(dialect: str, table_name: str) -> str:
+    if dialect == "postgresql":
+        return f'"{STAGING_SCHEMA}"."{table_name}"'
+    return f'"{table_name}"'
+
+
+def _validated_staging_tables(ds: DataSource) -> dict[str, dict]:
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(ds.connection_info, dict):
+        return {}
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return {}
+    if staging.get("dialect") != engine.dialect.name:
+        logger.warning("Ignoring staging metadata for data source %s with mismatched dialect.", ds.id)
+        return {}
+
+    tables_meta_list = staging.get("tables")
+    if not isinstance(tables_meta_list, list) or not tables_meta_list:
+        return {}
+
+    expected_schema = STAGING_SCHEMA if engine.dialect.name == "postgresql" else None
+    if staging.get("schema") != expected_schema:
+        logger.warning("Ignoring staging metadata for data source %s with mismatched schema.", ds.id)
+        return {}
+
+    inspector = inspect(engine)
+    table_prefix = f"ds_{ds.id}_"
+    trusted: dict[str, dict] = {}
+
+    for table_meta in tables_meta_list:
+        if not isinstance(table_meta, dict):
+            return {}
+
+        table_name = table_meta.get("table")
+        qualified = table_meta.get("qualified")
+        columns_meta = table_meta.get("columns")
+        if not isinstance(table_name, str) or not isinstance(qualified, str):
+            return {}
+        if not table_name.startswith(table_prefix) or not _SAFE_IDENT_RE.fullmatch(table_name):
+            logger.warning("Ignoring forged staging table metadata for data source %s.", ds.id)
+            return {}
+        if table_meta.get("schema") != expected_schema:
+            return {}
+        if qualified != _expected_qualified_name(engine.dialect.name, table_name):
+            return {}
+        if not isinstance(columns_meta, list) or not columns_meta:
+            return {}
+        if not inspector.has_table(table_name, schema=expected_schema):
+            logger.warning("Ignoring staging metadata for missing table %s.", table_name)
+            return {}
+
+        actual_columns = {
+            col.get("name")
+            for col in inspector.get_columns(table_name, schema=expected_schema)
+            if isinstance(col.get("name"), str)
+        }
+        safe_columns: list[dict] = []
+        for col_meta in columns_meta:
+            if not isinstance(col_meta, dict):
+                return {}
+            col_name = col_meta.get("name")
+            if (
+                not isinstance(col_name, str)
+                or not _SAFE_IDENT_RE.fullmatch(col_name)
+                or col_name not in actual_columns
+            ):
+                return {}
+            safe_columns.append(col_meta)
+
+        trusted[table_name] = {**table_meta, "columns": safe_columns}
+
+    return trusted
 
 
 def _build_baseline_sql(prompt: str, *, qualified: str, columns: list[dict], limit: int = 100) -> str:
@@ -252,12 +334,11 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
-        if not tables_meta_list:
+        tables_by_name = _validated_staging_tables(ds)
+        if not tables_by_name:
             continue
 
-        tables_by_name = {t["table"]: t for t in tables_meta_list}
+        tables_meta_list = list(tables_by_name.values())
         fields = (
             db.query(ThemeField)
             .filter(ThemeField.theme_id == theme.id)
@@ -278,7 +359,7 @@ def _try_staging_query(
             meta = tables_by_name.get(tname)
             if not meta:
                 continue
-            allowed_meta = {c["name"] for c in meta.get("columns", [])}
+            allowed_meta = {c["name"] for c in meta.get("columns", []) if isinstance(c, dict)}
             cols = [f.field_name for f in flist if f.field_name in allowed_meta]
             if cols:
                 chosen_table = tname
@@ -304,7 +385,7 @@ def _try_staging_query(
         if not isinstance(columns_meta, list):
             columns_meta = []
         allowed_tables = frozenset(
-            (t.get("qualified") or "").replace('"', "").replace("`", "")
+            _normalize_sql_identifier(t.get("qualified") or "")
             for t in tables_meta_list
             if isinstance(t, dict)
         )
