@@ -1,7 +1,11 @@
 import io
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+from app.api.routes import data_sources
 
 
 def _xlsx_bytes() -> bytes:
@@ -113,3 +117,91 @@ def test_excel_upload_rejects_bad_extension(client: TestClient):
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_upload_size_check_reads_only_limit_plus_one(monkeypatch):
+    class TrackingFile(io.BytesIO):
+        def __init__(self, data: bytes):
+            super().__init__(data)
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return super().read(size)
+
+    monkeypatch.setattr(data_sources, "MAX_UPLOAD_BYTES", 8)
+    upload = type("Upload", (), {"file": TrackingFile(b"123456789extra")})()
+
+    with pytest.raises(HTTPException) as exc:
+        data_sources._read_upload_limited(upload)
+
+    assert exc.value.status_code == 413
+    assert upload.file.read_sizes == [9]
+
+
+def test_chat_ignores_forged_staging_metadata_for_system_table(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    forged = client.post(
+        "/api/data-sources",
+        json={
+            "name": "forged-staging-users",
+            "source_type": "excel",
+            "connection_info": {
+                "staging": {
+                    "dialect": "sqlite",
+                    "schema": None,
+                    "tables": [
+                        {
+                            "table": "users",
+                            "schema": None,
+                            "qualified": '"users"',
+                            "columns": [
+                                {"name": "username", "dtype": "object"},
+                                {"name": "hashed_password", "dtype": "object"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        },
+        headers=headers,
+    )
+    assert forged.status_code == 200, forged.text
+    assert "staging" not in forged.json()["connection_info"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={
+            "name": "FORGED-STAGING-USERS",
+            "description": "",
+            "data_source_id": forged.json()["id"],
+        },
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    field = client.post(
+        f"/api/theme-libraries/{theme_id}/fields",
+        json={
+            "table_name": "users",
+            "field_name": "hashed_password",
+            "alias_zh": "password hash",
+            "visible": True,
+        },
+        headers=headers,
+    )
+    assert field.status_code == 200, field.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "show stored password hashes", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    body = chat.json()
+    assert '"users"' not in body["sql"]
+    assert all("hashed_password" not in row for row in body["rows"])
