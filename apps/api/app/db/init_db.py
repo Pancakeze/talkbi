@@ -1,10 +1,15 @@
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.models import User
 
+_DEMO_SEED_ENVIRONMENTS = {"development", "test"}
+
 
 def seed_data(db: Session) -> None:
+    if settings.environment.lower() not in _DEMO_SEED_ENVIRONMENTS:
+        return
     exists = db.query(User).filter(User.username == "admin").first()
     if exists:
         return

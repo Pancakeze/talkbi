@@ -17,6 +17,7 @@ _FORBIDDEN_KEYWORDS = (
     "replace",
     "grant",
     "revoke",
+    "into",
     # execution / side effects
     "copy",
     "attach",
@@ -28,10 +29,20 @@ _FORBIDDEN_KEYWORDS = (
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
     "sqlite_sleep",
+    "readfile",
+    "load_extension",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_SECTION_RE = re.compile(
+    r"\bfrom\b\s+(.+?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -43,10 +54,40 @@ def _normalize_ident(token: str) -> str:
     # Keep dots but strip quoting chars.
     t = token.strip()
     # remove trailing punctuation like "," or ")"
-    t = t.rstrip(",")
+    t = t.rstrip(",)")
     # Strip common quoting.
     t = t.replace('"', "").replace("`", "")
     return t
+
+
+def _split_top_level_commas(text: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(text):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth:
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append(text[start:i])
+                start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def _first_relation_token(fragment: str) -> str | None:
+    part = fragment.strip()
+    if not part or part.startswith("("):
+        return None
+    return part.split(None, 1)[0]
 
 
 def _extract_tables(sql_text: str) -> set[str]:
@@ -57,6 +98,15 @@ def _extract_tables(sql_text: str) -> set[str]:
         if ident.startswith("("):
             continue
         tables.add(ident)
+    for section in _FROM_SECTION_RE.findall(sql_text):
+        for fragment in _split_top_level_commas(section):
+            raw = _first_relation_token(fragment)
+            if not raw:
+                continue
+            ident = _normalize_ident(raw)
+            if ident.startswith("("):
+                continue
+            tables.add(ident)
     return tables
 
 
@@ -116,6 +166,8 @@ def validate_sql(
         if lim > policy.max_limit:
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
+        if not tables:
+            raise ValueError("An allowed table must be referenced.")
         norm_allowed = policy.allowed_tables
         for t in tables:
             if t not in norm_allowed:
