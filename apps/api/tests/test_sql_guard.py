@@ -51,6 +51,32 @@ def test_validate_sql_enforces_table_allowlist():
         validate_sql('SELECT a FROM "staging"."ds_2_t" LIMIT 10', policy=policy)
 
 
+def test_validate_sql_rejects_tableless_query_with_allowlist():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql("SELECT 1 LIMIT 1", policy=policy)
+
+
+def test_validate_sql_rejects_comma_join_allowlist_bypass():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    with pytest.raises(ValueError):
+        validate_sql(
+            'SELECT a FROM "staging"."ds_1_t", "public"."users" LIMIT 10',
+            policy=policy,
+        )
+
+
+def test_validate_sql_rejects_select_into():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a INTO copied FROM "staging"."ds_1_t" LIMIT 10')
+
+
 def test_validate_sql_enforces_schema_when_no_allowlist():
     policy = SQLGuardPolicy(allowed_schemas=("staging",))
     validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 10', policy=policy)
@@ -61,3 +87,10 @@ def test_validate_sql_enforces_schema_when_no_allowlist():
 def test_validate_sql_rejects_forbidden_function():
     with pytest.raises(ValueError):
         validate_sql("SELECT pg_sleep(10) FROM t LIMIT 1")
+
+
+def test_validate_sql_rejects_file_access_functions():
+    with pytest.raises(ValueError):
+        validate_sql("SELECT readfile('/etc/passwd') LIMIT 1")
+    with pytest.raises(ValueError):
+        validate_sql("SELECT pg_read_file('/etc/passwd') LIMIT 1")
