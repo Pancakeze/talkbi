@@ -2,13 +2,14 @@ import logging
 import re
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
@@ -223,6 +224,78 @@ def _chart_from_rows(prompt: str, rows: list[dict]) -> dict:
     }
 
 
+def _expected_staging_identifier(table_name: str) -> tuple[str, str | None, str]:
+    if engine.dialect.name == "postgresql":
+        return (
+            f'"{STAGING_SCHEMA}"."{table_name}"',
+            STAGING_SCHEMA,
+            f"{STAGING_SCHEMA}.{table_name}",
+        )
+    return f'"{table_name}"', None, table_name
+
+
+def _valid_staging_tables(ds: DataSource) -> list[dict]:
+    if ds.source_type != "excel" or ds.status != "active":
+        return []
+    if not isinstance(ds.connection_info, dict):
+        return []
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return []
+    if staging.get("dialect") not in (None, engine.dialect.name):
+        return []
+
+    raw_tables = staging.get("tables")
+    if not isinstance(raw_tables, list):
+        return []
+
+    inspector = inspect(engine)
+    table_prefix = f"ds_{ds.id}_"
+    valid: list[dict] = []
+
+    for meta in raw_tables:
+        if not isinstance(meta, dict):
+            continue
+        table_name = meta.get("table")
+        if not isinstance(table_name, str) or not table_name.startswith(table_prefix):
+            continue
+
+        expected_qualified, schema, normalized = _expected_staging_identifier(table_name)
+        if meta.get("qualified") != expected_qualified:
+            continue
+        if schema is not None and meta.get("schema") != schema:
+            continue
+        if schema is None and meta.get("schema") is not None:
+            continue
+        if not inspector.has_table(table_name, schema=schema):
+            continue
+
+        actual_columns = {
+            col["name"]
+            for col in inspector.get_columns(table_name, schema=schema)
+            if isinstance(col.get("name"), str)
+        }
+        columns = []
+        for col in meta.get("columns") or []:
+            if not isinstance(col, dict):
+                continue
+            name = col.get("name")
+            if isinstance(name, str) and name in actual_columns:
+                columns.append({"name": name, "dtype": str(col.get("dtype", ""))})
+
+        if not columns:
+            continue
+
+        trusted = dict(meta)
+        trusted["qualified"] = expected_qualified
+        trusted["columns"] = columns
+        trusted["_normalized_qualified"] = normalized
+        valid.append(trusted)
+
+    return valid
+
+
 def _try_staging_query(
     db: Session,
     user: User,
@@ -252,8 +325,7 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _valid_staging_tables(ds)
         if not tables_meta_list:
             continue
 
@@ -304,7 +376,7 @@ def _try_staging_query(
         if not isinstance(columns_meta, list):
             columns_meta = []
         allowed_tables = frozenset(
-            (t.get("qualified") or "").replace('"', "").replace("`", "")
+            t["_normalized_qualified"]
             for t in tables_meta_list
             if isinstance(t, dict)
         )
