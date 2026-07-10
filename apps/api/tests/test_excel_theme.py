@@ -107,6 +107,68 @@ def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     assert "district_name" in data["rows"][0]
 
 
+def test_chat_ignores_client_forged_staging_metadata(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    forged = {
+        "staging": {
+            "dialect": "sqlite",
+            "schema": None,
+            "tables": [
+                {
+                    "table": "users",
+                    "qualified": '"users"',
+                    "columns": [
+                        {"name": "username", "dtype": "object"},
+                        {"name": "hashed_password", "dtype": "object"},
+                    ],
+                }
+            ],
+        }
+    }
+    ds = client.post(
+        "/api/data-sources",
+        json={"name": "forged-staging", "source_type": "mysql", "connection_info": forged},
+        headers=headers,
+    )
+    assert ds.status_code == 200, ds.text
+    assert "staging" not in ds.json()["connection_info"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "伪造元数据防护库", "description": "", "data_source_id": ds.json()["id"]},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+
+    for col in ("username", "hashed_password"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={
+                "table_name": "users",
+                "field_name": col,
+                "alias_zh": col,
+                "visible": True,
+            },
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看用户和密码哈希", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    data = chat.json()
+    assert "users" not in data["sql"].lower()
+    assert "hashed_password" not in data["sql"].lower()
+    assert all("hashed_password" not in row for row in data["rows"])
+
+
 def test_excel_upload_rejects_bad_extension(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
