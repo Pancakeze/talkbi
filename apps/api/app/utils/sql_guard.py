@@ -13,6 +13,7 @@ _FORBIDDEN_KEYWORDS = (
     "alter",
     "update",
     "insert",
+    "into",
     "create",
     "replace",
     "grant",
@@ -27,11 +28,20 @@ _FORBIDDEN_KEYWORDS = (
 
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
     "sqlite_sleep",
+    "readfile",
+    "load_extension",
 )
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_JOIN_RE = re.compile(r"\b(from|join)\b\s+([^\s,;]+)", re.IGNORECASE)
+_FROM_SECTION_RE = re.compile(
+    r"\bfrom\b\s+(.*?)(?=\bwhere\b|\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 
 
@@ -58,6 +68,19 @@ def _extract_tables(sql_text: str) -> set[str]:
             continue
         tables.add(ident)
     return tables
+
+
+def _has_comma_join(sql_text: str) -> bool:
+    for match in _FROM_SECTION_RE.finditer(sql_text):
+        depth = 0
+        for ch in match.group(1):
+            if ch == "(":
+                depth += 1
+            elif ch == ")" and depth > 0:
+                depth -= 1
+            elif ch == "," and depth == 0:
+                return True
+    return False
 
 
 def _extract_limit(sql_text: str) -> Optional[int]:
@@ -107,6 +130,8 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
     if any(fn in low for fn in _FORBIDDEN_FUNCTIONS):
         raise ValueError("Unsafe SQL detected.")
+    if _has_comma_join(cleaned):
+        raise ValueError("Comma joins are not allowed.")
 
     tables = _extract_tables(cleaned)
     lim = _extract_limit(cleaned)
