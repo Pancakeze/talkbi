@@ -76,7 +76,7 @@ def upload_excel(
             detail="Only .xlsx, .xls, or .csv files are accepted.",
         )
 
-    raw = file.file.read()
+    raw = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,

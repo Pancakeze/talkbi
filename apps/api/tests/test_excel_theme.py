@@ -1,8 +1,11 @@
 import io
 
 import pandas as pd
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from app.api.routes import data_sources as data_sources_routes
 from app.db.session import SessionLocal, engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.services.chat_service import run_chat_query
@@ -250,3 +253,24 @@ def test_excel_upload_rejects_bad_extension(client: TestClient):
     files = {"file": ("bad.txt", b"hello", "text/plain")}
     r = client.post("/api/data-sources/excel/upload", files=files, headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 400
+
+
+def test_excel_upload_reads_only_limit_plus_one(monkeypatch):
+    class RecordingFile:
+        read_size = None
+
+        def read(self, size=-1):
+            self.read_size = size
+            return b"12345"
+
+    class FakeUpload:
+        filename = "large.csv"
+        file = RecordingFile()
+
+    monkeypatch.setattr(data_sources_routes, "MAX_UPLOAD_BYTES", 4)
+
+    with pytest.raises(HTTPException) as exc:
+        data_sources_routes.upload_excel(file=FakeUpload(), db=None, current_user=None)
+
+    assert exc.value.status_code == 413
+    assert FakeUpload.file.read_size == 5
