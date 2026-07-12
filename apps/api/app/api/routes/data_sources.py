@@ -46,10 +46,13 @@ def create_data_source(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    connection_info = dict(payload.connection_info or {})
+    # Staging metadata is server-owned and must only be produced by Excel upload.
+    connection_info.pop("staging", None)
     item = DataSource(
         name=payload.name,
         source_type=payload.source_type,
-        connection_info=payload.connection_info,
+        connection_info=connection_info,
         owner_id=current_user.id,
         status="active",
     )
