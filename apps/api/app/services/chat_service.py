@@ -2,6 +2,7 @@ import logging
 import re
 from typing import Optional
 
+from fastapi import HTTPException, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -414,5 +415,15 @@ def run_chat_query(
     staged = _try_staging_query(db, user, prompt, theme_ids)
     if staged:
         return staged
+    if theme_ids:
+        logger.warning(
+            "chat_query unavailable_for_selected_themes user=%s theme_ids=%s",
+            user.username,
+            theme_ids,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unable to query the selected themes.",
+        )
     logger.info("chat_query fallback_to_mock user=%s theme_ids=%s", user.username, theme_ids)
     return _mock_response(prompt)
