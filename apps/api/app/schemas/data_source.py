@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.common import Timestamped
 
@@ -6,7 +6,7 @@ from app.schemas.common import Timestamped
 class DataSourceCreate(BaseModel):
     name: str
     source_type: str
-    connection_info: dict = {}
+    connection_info: dict = Field(default_factory=dict)
 
 
 class DataSourceOut(Timestamped):
