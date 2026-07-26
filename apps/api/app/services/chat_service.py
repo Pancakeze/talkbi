@@ -2,13 +2,17 @@ import logging
 import re
 from typing import Optional
 
+from fastapi import HTTPException, status
+from sqlalchemy import inspect
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.session import engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.schemas.chat import ChatQueryResponse
+from app.services.excel_service import STAGING_SCHEMA
 from app.services.ollama_client import OllamaConfig, ollama_generate
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
 
@@ -223,6 +227,96 @@ def _chart_from_rows(prompt: str, rows: list[dict]) -> dict:
     }
 
 
+def _expected_staging_identifiers(table_name: str, dialect: str) -> tuple[Optional[str], str, str]:
+    if dialect == "postgresql":
+        return STAGING_SCHEMA, f'"{STAGING_SCHEMA}"."{table_name}"', f"{STAGING_SCHEMA}.{table_name}"
+    return None, f'"{table_name}"', table_name
+
+
+def _actual_table_columns(table_name: str, schema: Optional[str]) -> set[str]:
+    try:
+        inspector = inspect(engine)
+        return {col["name"] for col in inspector.get_columns(table_name, schema=schema)}
+    except SQLAlchemyError as exc:
+        logger.warning("Failed to inspect staging table %s.%s: %s", schema, table_name, exc)
+        return set()
+
+
+def _trusted_staging_tables(ds: DataSource) -> list[dict]:
+    """
+    Return only server-materialized Excel staging metadata.
+
+    Client-created data sources can contain arbitrary JSON, so chat must verify
+    metadata against invariants created by materialize_excel_staging and the
+    actual database table before letting it become a SQL allowlist.
+    """
+    if ds.source_type != "excel" or ds.status != "active" or not isinstance(ds.connection_info, dict):
+        return []
+
+    staging = ds.connection_info.get("staging")
+    if not isinstance(staging, dict):
+        return []
+
+    dialect = engine.dialect.name
+    if staging.get("dialect") != dialect:
+        return []
+
+    tables_meta_list = staging.get("tables")
+    if not isinstance(tables_meta_list, list):
+        return []
+
+    table_prefix = f"ds_{ds.id}_"
+    trusted: list[dict] = []
+    for meta in tables_meta_list:
+        if not isinstance(meta, dict):
+            continue
+
+        table_name = meta.get("table")
+        if not isinstance(table_name, str) or not table_name.startswith(table_prefix):
+            continue
+
+        expected_schema, expected_qualified, allowed_identifier = _expected_staging_identifiers(
+            table_name,
+            dialect,
+        )
+        if meta.get("schema") != expected_schema or meta.get("qualified") != expected_qualified:
+            continue
+
+        actual_columns = _actual_table_columns(table_name, expected_schema)
+        if not actual_columns:
+            continue
+
+        columns_meta = meta.get("columns")
+        if not isinstance(columns_meta, list):
+            continue
+
+        trusted_columns = []
+        seen_columns: set[str] = set()
+        for column in columns_meta:
+            if not isinstance(column, dict):
+                continue
+            name = column.get("name")
+            if not isinstance(name, str) or name in seen_columns or name not in actual_columns:
+                continue
+            trusted_columns.append({"name": name, "dtype": str(column.get("dtype", ""))})
+            seen_columns.add(name)
+
+        if not trusted_columns:
+            continue
+
+        trusted.append(
+            {
+                **meta,
+                "schema": expected_schema,
+                "qualified": expected_qualified,
+                "columns": trusted_columns,
+                "allowed_identifier": allowed_identifier,
+            }
+        )
+
+    return trusted
+
+
 def _try_staging_query(
     db: Session,
     user: User,
@@ -252,8 +346,7 @@ def _try_staging_query(
         if not ds or not isinstance(ds.connection_info, dict):
             continue
 
-        staging = ds.connection_info.get("staging") or {}
-        tables_meta_list = staging.get("tables") or []
+        tables_meta_list = _trusted_staging_tables(ds)
         if not tables_meta_list:
             continue
 
@@ -304,7 +397,7 @@ def _try_staging_query(
         if not isinstance(columns_meta, list):
             columns_meta = []
         allowed_tables = frozenset(
-            (t.get("qualified") or "").replace('"', "").replace("`", "")
+            t["allowed_identifier"]
             for t in tables_meta_list
             if isinstance(t, dict)
         )
@@ -414,5 +507,15 @@ def run_chat_query(
     staged = _try_staging_query(db, user, prompt, theme_ids)
     if staged:
         return staged
+    if theme_ids:
+        logger.warning(
+            "chat_query unavailable_for_selected_themes user=%s theme_ids=%s",
+            user.username,
+            theme_ids,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Unable to query the selected themes.",
+        )
     logger.info("chat_query fallback_to_mock user=%s theme_ids=%s", user.username, theme_ids)
     return _mock_response(prompt)
