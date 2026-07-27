@@ -96,3 +96,38 @@ def test_validate_sql_rejects_forbidden_function():
     for fn in ("pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file", "readfile", "load_extension"):
         with pytest.raises(ValueError):
             validate_sql(f"SELECT {fn}('/etc/passwd')")
+
+
+def test_validate_sql_rejects_postgres_xml_allowlist_bypass():
+    """table_to_xml / query_to_xml dump other relations without FROM/JOIN refs."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT table_to_xml(\'users\'::regclass, true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT database_to_xml(true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        (
+            'SELECT query_to_xml(concat(\'SELECT hashed_password FRO\',\'M users\'), '
+            'true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        'SELECT cursor_to_xml(\'c\'::refcursor, 10, true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT schema_to_xml(\'public\', true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_file_and_dblink_side_effects():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT lo_export(1, \'/tmp/x\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_file_write(\'/tmp/x\', \'x\', false) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT dblink(\'dbname=postgres\', \'select 1\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT writefile(\'/tmp/x\', \'x\') FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
