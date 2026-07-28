@@ -131,3 +131,36 @@ def test_validate_sql_rejects_file_and_dblink_side_effects():
     ):
         with pytest.raises(ValueError, match="Unsafe SQL"):
             validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_quoted_forbidden_functions():
+    """Identifier quotes must not evade the dangerous-function denylist."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT "table_to_xml"(\'users\'::regclass, true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT "pg_read_file"(\'/etc/passwd\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_catalog."table_to_xml"(\'users\'::regclass, true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT "pg_catalog"."query_to_xml"(concat(\'SELECT 1\'), true, true, \'\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT "lo_export"(1, \'/tmp/x\') FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_table_shorthand_allowlist_bypass():
+    """PostgreSQL TABLE rel can read arbitrary relations without a FROM token."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT * FROM "staging"."ds_1_t", (TABLE users) u LIMIT 10',
+        'SELECT u.* FROM "staging"."ds_1_t" CROSS JOIN (TABLE users) AS u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" JOIN (TABLE users) u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", (TABLE ONLY "users") u LIMIT 10',
+    ):
+        with pytest.raises(ValueError, match="Table is not allowed"):
+            validate_sql(sql, policy=policy)
