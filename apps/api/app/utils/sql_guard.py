@@ -73,6 +73,12 @@ _FORBIDDEN_FUNCTION_RE = re.compile(
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
 _JOIN_RE = re.compile(r"\bjoin\b\s+([^\s,;]+)", re.IGNORECASE)
+# PostgreSQL TABLE shorthand: (TABLE users) / TABLE ONLY public.users
+# can reference relations without a normal FROM/JOIN identifier token.
+_TABLE_SHORTHAND_RE = re.compile(
+    r"\btable\b\s+(?:only\s+)?([^\s,;)]+)",
+    re.IGNORECASE,
+)
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
 _CLAUSE_BOUNDARIES = (
     "where",
@@ -101,6 +107,14 @@ def _normalize_ident(token: str) -> str:
     # Strip common quoting.
     t = t.replace('"', "").replace("`", "")
     return t
+
+
+def _sql_for_function_scan(sql_text: str) -> str:
+    """
+    Strip identifier quoting so denylisted calls still match when written as
+    "table_to_xml"(...) or pg_catalog."pg_read_file"(...).
+    """
+    return sql_text.replace('"', "").replace("`", "")
 
 
 def _keyword_at(sql_text: str, idx: int, keyword: str) -> bool:
@@ -171,7 +185,17 @@ def _split_top_level_commas(sql_text: str) -> list[str]:
 
 def _first_table_ident(table_ref: str) -> str | None:
     ref = table_ref.strip()
-    if not ref or ref.startswith("("):
+    if not ref:
+        return None
+
+    # Parenthesized TABLE shorthand: (TABLE users) alias
+    if ref.startswith("("):
+        inner = ref[1:].lstrip()
+        shorthand = _TABLE_SHORTHAND_RE.match(inner)
+        if shorthand:
+            ident = _normalize_ident(shorthand.group(1))
+            if ident:
+                return ident
         return None
 
     parts = ref.split()
@@ -183,6 +207,11 @@ def _first_table_ident(table_ref: str) -> str | None:
         if len(parts) < 2 or parts[1].startswith("("):
             return None
         token = parts[1]
+    elif parts[0].lower() == "table":
+        shorthand = _TABLE_SHORTHAND_RE.match(ref)
+        if not shorthand:
+            return None
+        token = shorthand.group(1)
     else:
         token = parts[0]
 
@@ -203,6 +232,11 @@ def _extract_tables(sql_text: str) -> set[str]:
                 tables.add(ident)
     for raw in _JOIN_RE.findall(sql_text):
         ident = _first_table_ident(raw)
+        if ident:
+            tables.add(ident)
+    # Catch TABLE shorthand even when JOIN regex only tokenizes "(TABLE".
+    for raw in _TABLE_SHORTHAND_RE.findall(sql_text):
+        ident = _normalize_ident(raw)
         if ident:
             tables.add(ident)
     return tables
@@ -253,7 +287,7 @@ def validate_sql(
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
-    if _FORBIDDEN_FUNCTION_RE.search(cleaned):
+    if _FORBIDDEN_FUNCTION_RE.search(_sql_for_function_scan(cleaned)):
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
