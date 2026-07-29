@@ -164,3 +164,57 @@ def test_validate_sql_rejects_table_shorthand_allowlist_bypass():
     ):
         with pytest.raises(ValueError, match="Table is not allowed"):
             validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_lateral_join_allowlist_bypass():
+    """JOIN LATERAL <table> must still enforce the table allowlist."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN LATERAL users LIMIT 10',
+        'SELECT u.hashed_password FROM "staging"."ds_1_t" t JOIN LATERAL users u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" LEFT JOIN LATERAL ONLY users ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN LATERAL "public"."users" LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN LATERAL public.users LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", LATERAL users LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", LATERAL ONLY users LIMIT 10',
+    ):
+        with pytest.raises(ValueError, match="Table is not allowed"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_unicode_escaped_forbidden_functions():
+    """U& unicode identifier escapes must not hide denylisted function names."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT U&"table\\005fto\\005fxml"(\'users\'::regclass, true, true, \'\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"pg\\005fread\\005ffile"(\'/etc/passwd\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_catalog.U&"query\\005fto\\005fxml"(concat(\'SELECT 1\'), true, true, \'\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_additional_lo_dblink_and_admin_functions():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT lo_get(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT loread(lo_open(1, 262144), 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT lo_from_bytea(0, \'x\'::bytea) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT dblink_connect_u(\'c\', \'dbname=postgres\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_execute_server_program(\'id\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_ls_logicalsnapdir() FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_read_file\x00(\'/etc/passwd\') FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
