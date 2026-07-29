@@ -36,11 +36,24 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_ls_waldir",
     "pg_ls_archive_statusdir",
     "pg_ls_tmpdir",
+    "pg_ls_logicalsnapdir",
+    "pg_ls_logicalmapdir",
+    "pg_ls_replslotdir",
     "pg_file_write",
     "pg_file_unlink",
     "pg_file_rename",
+    "pg_file_sync",
+    "pg_execute_server_program",
     "lo_import",
     "lo_export",
+    "lo_get",
+    "lo_put",
+    "lo_from_bytea",
+    "lo_create",
+    "lo_unlink",
+    "lo_open",
+    "loread",
+    "lowrite",
     # PostgreSQL XML helpers can dump arbitrary relations / run nested SQL
     # without putting the victim table in FROM/JOIN, bypassing allowlists.
     "table_to_xml",
@@ -60,6 +73,7 @@ _FORBIDDEN_FUNCTIONS = (
     "dblink",
     "dblink_exec",
     "dblink_connect",
+    "dblink_connect_u",
     "readfile",
     "writefile",
     "load_extension",
@@ -69,10 +83,18 @@ _FORBIDDEN_FUNCTION_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(fn) for fn in _FORBIDDEN_FUNCTIONS) + r")\s*\(",
     re.IGNORECASE,
 )
+# PostgreSQL U&"..." unicode identifier/string escapes: \xxxx or \+xxxxxx
+_UNICODE_ESCAPE_RE = re.compile(
+    r"\\(?:\+([0-9A-Fa-f]{6})|([0-9A-Fa-f]{4}))",
+)
 
 _LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
-_JOIN_RE = re.compile(r"\bjoin\b\s+([^\s,;]+)", re.IGNORECASE)
+# Include optional LATERAL / ONLY so JOIN LATERAL users is not truncated to "LATERAL".
+_JOIN_RE = re.compile(
+    r"\bjoin\b\s+((?:lateral\s+)?(?:only\s+)?[^\s,;]+)",
+    re.IGNORECASE,
+)
 # PostgreSQL TABLE shorthand: (TABLE users) / TABLE ONLY public.users
 # can reference relations without a normal FROM/JOIN identifier token.
 _TABLE_SHORTHAND_RE = re.compile(
@@ -109,12 +131,28 @@ def _normalize_ident(token: str) -> str:
     return t
 
 
+def _decode_postgres_unicode_escapes(sql_text: str) -> str:
+    """Decode PostgreSQL U& unicode escapes so denylist matching sees real names."""
+
+    def _repl(match: re.Match[str]) -> str:
+        hex_digits = match.group(1) or match.group(2)
+        try:
+            return chr(int(hex_digits, 16))
+        except ValueError:
+            return match.group(0)
+
+    return _UNICODE_ESCAPE_RE.sub(_repl, sql_text)
+
+
 def _sql_for_function_scan(sql_text: str) -> str:
     """
     Strip identifier quoting so denylisted calls still match when written as
     "table_to_xml"(...) or pg_catalog."pg_read_file"(...).
+
+    Also decode U&"table\\005fto\\005fxml" style unicode escapes that would
+    otherwise hide denylisted names from a literal regex match.
     """
-    return sql_text.replace('"', "").replace("`", "")
+    return _decode_postgres_unicode_escapes(sql_text.replace('"', "").replace("`", ""))
 
 
 def _keyword_at(sql_text: str, idx: int, keyword: str) -> bool:
@@ -201,19 +239,25 @@ def _first_table_ident(table_ref: str) -> str | None:
     parts = ref.split()
     if not parts:
         return None
-    if parts[0].lower() == "only" and len(parts) > 1:
-        token = parts[1]
-    elif parts[0].lower() == "lateral":
-        if len(parts) < 2 or parts[1].startswith("("):
+
+    idx = 0
+    # JOIN/FROM items may be written as: LATERAL ONLY schema.table
+    if parts[idx].lower() == "lateral":
+        idx += 1
+        if idx >= len(parts) or parts[idx].startswith("("):
             return None
-        token = parts[1]
-    elif parts[0].lower() == "table":
-        shorthand = _TABLE_SHORTHAND_RE.match(ref)
+    if parts[idx].lower() == "only":
+        idx += 1
+        if idx >= len(parts):
+            return None
+
+    if parts[idx].lower() == "table":
+        shorthand = _TABLE_SHORTHAND_RE.match(" ".join(parts[idx:]))
         if not shorthand:
             return None
         token = shorthand.group(1)
     else:
-        token = parts[0]
+        token = parts[idx]
 
     ident = _normalize_ident(token)
     if not ident or ident.startswith("("):
@@ -283,6 +327,8 @@ def validate_sql(
         raise ValueError("Multiple statements are not allowed.")
     if "--" in cleaned or "/*" in cleaned or "*/" in cleaned:
         raise ValueError("SQL comments are not allowed.")
+    if "\x00" in cleaned:
+        raise ValueError("Unsafe SQL detected.")
 
     words = {w.lower() for w in _WORD_RE.findall(cleaned)}
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
