@@ -449,18 +449,36 @@ def _try_staging_query(
                 logger.warning("Ollama SQL generation failed, fallback to simple SELECT: %s", exc)
                 sql_text = baseline_sql
                 used_llm_sql = False
+        guard_policy = SQLGuardPolicy(
+            max_limit=200,
+            allowed_schemas=("staging",),
+            allowed_tables=allowed_tables,
+        )
         try:
-            validate_sql(
-                sql_text,
-                policy=SQLGuardPolicy(
-                    max_limit=200,
-                    allowed_schemas=("staging",),
-                    allowed_tables=allowed_tables,
-                ),
-            )
+            validate_sql(sql_text, policy=guard_policy)
         except ValueError as exc:
-            logger.warning("SQLGuard rejected staging SQL for theme %s: %s", theme.id, exc)
-            continue
+            # LLM output is best-effort; keep the deterministic baseline when the
+            # model returns CTE names, keyword false-positives, etc.
+            if used_llm_sql and sql_text != baseline_sql:
+                logger.warning(
+                    "SQLGuard rejected LLM SQL for theme %s (%s); fallback to baseline.",
+                    theme.id,
+                    exc,
+                )
+                sql_text = baseline_sql
+                used_llm_sql = False
+                try:
+                    validate_sql(sql_text, policy=guard_policy)
+                except ValueError as baseline_exc:
+                    logger.warning(
+                        "SQLGuard rejected baseline SQL for theme %s: %s",
+                        theme.id,
+                        baseline_exc,
+                    )
+                    continue
+            else:
+                logger.warning("SQLGuard rejected staging SQL for theme %s: %s", theme.id, exc)
+                continue
 
         try:
             with engine.begin() as conn:
