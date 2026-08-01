@@ -74,6 +74,14 @@ _FORBIDDEN_FUNCTIONS = (
     "dblink_exec",
     "dblink_connect",
     "dblink_connect_u",
+    "dblink_open",
+    "dblink_fetch",
+    "dblink_close",
+    "dblink_send_query",
+    "dblink_get_result",
+    "dblink_get_connections",
+    "dblink_disconnect",
+    "dblink_cancel_query",
     "readfile",
     "writefile",
     "load_extension",
@@ -99,6 +107,11 @@ _JOIN_RE = re.compile(
 # can reference relations without a normal FROM/JOIN identifier token.
 _TABLE_SHORTHAND_RE = re.compile(
     r"\btable\b\s+(?:only\s+)?([^\s,;)]+)",
+    re.IGNORECASE,
+)
+# SQL-standard / PostgreSQL: ONLY ( relation_name )
+_ONLY_PAREN_RELATION_RE = re.compile(
+    r"^\(\s*([^\s,;()]+)\s*\)",
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
@@ -250,6 +263,12 @@ def _first_table_ident(table_ref: str) -> str | None:
         idx += 1
         if idx >= len(parts):
             return None
+        # SQL standard form: ONLY ( relation_name ) — parentheses are optional
+        # in PostgreSQL but still valid and must be allowlisted.
+        only_paren = _ONLY_PAREN_RELATION_RE.match(" ".join(parts[idx:]))
+        if only_paren:
+            ident = _normalize_ident(only_paren.group(1))
+            return ident or None
 
     if parts[idx].lower() == "table":
         shorthand = _TABLE_SHORTHAND_RE.match(" ".join(parts[idx:]))
@@ -258,6 +277,13 @@ def _first_table_ident(table_ref: str) -> str | None:
         token = shorthand.group(1)
     else:
         token = parts[idx]
+
+    # ONLY(users) without whitespace after ONLY
+    if token.lower().startswith("only("):
+        only_paren = _ONLY_PAREN_RELATION_RE.match(token[4:])
+        if only_paren:
+            ident = _normalize_ident(only_paren.group(1))
+            return ident or None
 
     ident = _normalize_ident(token)
     if not ident or ident.startswith("("):
