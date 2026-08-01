@@ -208,6 +208,13 @@ def test_validate_sql_rejects_only_paren_relation_allowlist_bypass():
         'SELECT * FROM "staging"."ds_1_t" NATURAL JOIN ONLY (users) LIMIT 10',
         'SELECT * FROM "staging"."ds_1_t", ONLY(users) u LIMIT 10',
         'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY (pg_shadow) u LIMIT 10',
+        # JOIN regex used to truncate at whitespace inside ONLY (...), skipping allowlist.
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY (  users  ) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY ( "public"."users" ) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" JOIN ONLY ( "pg_catalog"."pg_authid" ) u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", ONLY (  "public"  .  "users"  ) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY ( "public" . "users" ) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY( "users" ) u LIMIT 10',
     ):
         with pytest.raises(ValueError, match="Table is not allowed"):
             validate_sql(sql, policy=policy)

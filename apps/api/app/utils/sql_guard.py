@@ -109,9 +109,20 @@ _TABLE_SHORTHAND_RE = re.compile(
     r"\btable\b\s+(?:only\s+)?([^\s,;)]+)",
     re.IGNORECASE,
 )
-# SQL-standard / PostgreSQL: ONLY ( relation_name )
+# One relation identifier, optionally schema-qualified, with optional quoting /
+# whitespace around the dot (PostgreSQL accepts ONLY ( "public" . "users" )).
+_RELATION_IDENT = (
+    r"(?:\"[^\"]+\"|`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)"
+    r"(?:\s*\.\s*(?:\"[^\"]+\"|`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*))?"
+)
+# SQL-standard / PostgreSQL: ONLY ( relation_name ) at start of a table_ref token
 _ONLY_PAREN_RELATION_RE = re.compile(
-    r"^\(\s*([^\s,;()]+)\s*\)",
+    rf"^\(\s*({_RELATION_IDENT})\s*\)",
+    re.IGNORECASE,
+)
+# Same form scanned anywhere so JOIN regex truncation (ONLY \s*\() cannot skip it.
+_ONLY_PAREN_RELATION_ANYWHERE_RE = re.compile(
+    rf"\bonly\s*\(\s*({_RELATION_IDENT})\s*\)",
     re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
@@ -135,12 +146,15 @@ def _strip_sql(sql_text: str) -> str:
 
 
 def _normalize_ident(token: str) -> str:
-    # Keep dots but strip quoting chars.
+    # Keep dots but strip quoting chars / insignificant identifier whitespace.
     t = token.strip()
     # remove trailing punctuation like "," or ")"
     t = t.rstrip(",")
     # Strip common quoting.
     t = t.replace('"', "").replace("`", "")
+    # "public" . "users" / public  .  users → public.users
+    t = re.sub(r"\s*\.\s*", ".", t)
+    t = re.sub(r"\s+", "", t)
     return t
 
 
@@ -306,6 +320,11 @@ def _extract_tables(sql_text: str) -> set[str]:
             tables.add(ident)
     # Catch TABLE shorthand even when JOIN regex only tokenizes "(TABLE".
     for raw in _TABLE_SHORTHAND_RE.findall(sql_text):
+        ident = _normalize_ident(raw)
+        if ident:
+            tables.add(ident)
+    # Catch ONLY (rel) even when JOIN regex truncates to "ONLY (".
+    for raw in _ONLY_PAREN_RELATION_ANYWHERE_RE.findall(sql_text):
         ident = _normalize_ident(raw)
         if ident:
             tables.add(ident)
