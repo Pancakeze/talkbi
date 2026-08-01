@@ -128,6 +128,13 @@ def test_validate_sql_rejects_file_and_dblink_side_effects():
         'SELECT pg_file_write(\'/tmp/x\', \'x\', false) FROM "staging"."ds_1_t" LIMIT 1',
         'SELECT dblink(\'dbname=postgres\', \'select 1\') FROM "staging"."ds_1_t" LIMIT 1',
         'SELECT writefile(\'/tmp/x\', \'x\') FROM "staging"."ds_1_t" LIMIT 1',
+        (
+            'SELECT dblink_fetch(dblink_open(\'c\', \'dbname=talkbi\', '
+            '\'SELECT hashed_password FRO\'||\'M users\'), 100) '
+            'FROM "staging"."ds_1_t" LIMIT 100'
+        ),
+        'SELECT dblink_send_query(\'c\', \'SELECT 1\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT dblink_get_result(\'c\') FROM "staging"."ds_1_t" LIMIT 1',
     ):
         with pytest.raises(ValueError, match="Unsafe SQL"):
             validate_sql(sql, policy=policy)
@@ -180,6 +187,27 @@ def test_validate_sql_rejects_lateral_join_allowlist_bypass():
         'SELECT * FROM "staging"."ds_1_t" CROSS JOIN LATERAL public.users LIMIT 10',
         'SELECT * FROM "staging"."ds_1_t", LATERAL users LIMIT 10',
         'SELECT * FROM "staging"."ds_1_t", LATERAL ONLY users LIMIT 10',
+    ):
+        with pytest.raises(ValueError, match="Table is not allowed"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_only_paren_relation_allowlist_bypass():
+    """PostgreSQL/SQL-standard ONLY (rel) must still enforce the table allowlist."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT u.hashed_password FROM "staging"."ds_1_t" t CROSS JOIN ONLY (users) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", ONLY (users) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", ONLY ( users ) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" LEFT JOIN ONLY (public.users) u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" RIGHT JOIN ONLY ("users") u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" FULL JOIN ONLY (pg_catalog.pg_authid) u ON true LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" NATURAL JOIN ONLY (users) LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t", ONLY(users) u LIMIT 10',
+        'SELECT * FROM "staging"."ds_1_t" CROSS JOIN ONLY (pg_shadow) u LIMIT 10',
     ):
         with pytest.raises(ValueError, match="Table is not allowed"):
             validate_sql(sql, policy=policy)
