@@ -82,6 +82,13 @@ _FORBIDDEN_FUNCTIONS = (
     "dblink_get_connections",
     "dblink_disconnect",
     "dblink_cancel_query",
+    # Text-search helpers that execute a caller-supplied SQL string via SPI,
+    # allowing allowlist bypass when FROM is obfuscated inside the string.
+    "ts_stat",
+    "ts_rewrite",
+    # Session disruption / DoS primitives that must not run in chat SQL.
+    "pg_terminate_backend",
+    "pg_cancel_backend",
     "readfile",
     "writefile",
     "load_extension",
