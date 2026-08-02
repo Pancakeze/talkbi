@@ -253,3 +253,47 @@ def test_validate_sql_rejects_additional_lo_dblink_and_admin_functions():
     ):
         with pytest.raises(ValueError, match="Unsafe SQL"):
             validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_ts_stat_nested_sql_allowlist_bypass():
+    """ts_stat executes a text SQL query via SPI; FROM can be hidden in the string."""
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        (
+            "SELECT ts_stat('SELECT username::tsvector FRO'||'M users') "
+            'FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        (
+            "SELECT pg_catalog.ts_stat('SELECT rolname::tsvector FRO'||'M pg_authid') "
+            'FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        (
+            "SELECT \"ts_stat\"('SELECT to_tsvector(''simple'', passwd) FRO'||'M pg_shadow') "
+            'FROM "staging"."ds_1_t" LIMIT 100'
+        ),
+        (
+            "SELECT U&\"ts\\005fstat\"('SELECT username::tsvector FRO'||'M users') "
+            'FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        (
+            "SELECT ts_stat(chr(83)||chr(69)||chr(76)||chr(69)||chr(67)||chr(84)"
+            "||' username::tsvector '||chr(70)||chr(82)||chr(79)||chr(77)||' users') "
+            'FROM "staging"."ds_1_t" LIMIT 100'
+        ),
+        (
+            'SELECT s.* FROM "staging"."ds_1_t" CROSS JOIN LATERAL '
+            "(SELECT ts_stat('SELECT username::tsvector FRO'||'M users')) s LIMIT 100"
+        ),
+        (
+            "SELECT ts_rewrite('a'::tsquery, "
+            "'SELECT ''a''::tsquery, ''b''::tsquery FRO'||'M users') "
+            'FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        'SELECT pg_terminate_backend(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_cancel_backend(pg_backend_pid()) FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
