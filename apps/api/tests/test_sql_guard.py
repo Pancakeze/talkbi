@@ -297,3 +297,50 @@ def test_validate_sql_rejects_ts_stat_nested_sql_allowlist_bypass():
     ):
         with pytest.raises(ValueError, match="Unsafe SQL"):
             validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_limit_expressions_that_bypass_max_limit():
+    """DB engines evaluate LIMIT expressions; the guard must not trust the first digits."""
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    validate_sql('SELECT a FROM "staging"."ds_1_t" LIMIT 200', policy=policy)
+    validate_sql(
+        'SELECT a FROM (SELECT a FROM "staging"."ds_1_t" LIMIT 10) x LIMIT 20',
+        policy=policy,
+    )
+    for sql in (
+        'SELECT a FROM "staging"."ds_1_t" LIMIT 1+999999',
+        'SELECT a FROM "staging"."ds_1_t" LIMIT 200*200',
+        'SELECT a FROM "staging"."ds_1_t" LIMIT (999)',
+        'SELECT a FROM "staging"."ds_1_t" LIMIT 1e9',
+        'SELECT * FROM (SELECT a FROM "staging"."ds_1_t" LIMIT 1) x LIMIT 1+999999',
+        'SELECT a FROM "staging"."ds_1_t" LIMIT 001 + 500',
+    ):
+        with pytest.raises(ValueError, match="LIMIT"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT pg_sleep_for(\'10 minutes\') FROM "staging"."ds_1_t" LIMIT 1',
+        "SELECT set_config('statement_timeout','0',true) FROM \"staging\".\"ds_1_t\" LIMIT 1",
+        'SELECT pg_reload_conf() FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_promote() FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_switch_wal() FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_advisory_lock(1) FROM "staging"."ds_1_t" LIMIT 1',
+        (
+            "SELECT crosstab(concat('SELECT username::text, ''c''::text, "
+            "hashed_password::text FRO','M users')) "
+            'FROM "staging"."ds_1_t" LIMIT 1'
+        ),
+        'SELECT connectby(\'users\',\'id\',\'parent_id\',\'1\',0) FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
