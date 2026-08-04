@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_SECRET_KEY = "talkbi-dev-secret-key"
+MIN_SECRET_KEY_LENGTH = 32
 DEMO_SEED_ENVIRONMENTS = {"development", "test"}
 PROTECTED_ENVIRONMENTS = {"staging", "production"}
 
@@ -32,12 +33,18 @@ class Settings(BaseSettings):
         return self.normalized_environment in DEMO_SEED_ENVIRONMENTS
 
     def validate_production_safety(self) -> None:
-        if (
-            self.normalized_environment in PROTECTED_ENVIRONMENTS
-            and self.secret_key == DEFAULT_SECRET_KEY
-        ):
+        if self.normalized_environment not in PROTECTED_ENVIRONMENTS:
+            return
+        key = self.secret_key or ""
+        # Empty/whitespace or the committed default lets anyone forge HS256 JWTs.
+        if not key.strip() or key == DEFAULT_SECRET_KEY:
             raise RuntimeError(
                 "SECRET_KEY must be set to a non-default value in staging/production."
+            )
+        if len(key) < MIN_SECRET_KEY_LENGTH:
+            raise RuntimeError(
+                "SECRET_KEY must be at least "
+                f"{MIN_SECRET_KEY_LENGTH} characters in staging/production."
             )
 
 

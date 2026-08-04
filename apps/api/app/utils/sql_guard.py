@@ -89,6 +89,24 @@ _FORBIDDEN_FUNCTIONS = (
     # Session disruption / DoS primitives that must not run in chat SQL.
     "pg_terminate_backend",
     "pg_cancel_backend",
+    "pg_sleep_for",
+    "set_config",
+    "pg_reload_conf",
+    "pg_rotate_logfile",
+    "pg_promote",
+    "pg_switch_wal",
+    "pg_wal_replay_pause",
+    "pg_create_restore_point",
+    "pg_advisory_lock",
+    "pg_advisory_unlock",
+    "pg_advisory_xact_lock",
+    "pg_advisory_unlock_all",
+    # tablefunc helpers: crosstab runs caller SQL text; connectby takes a table name.
+    "crosstab",
+    "crosstab2",
+    "crosstab3",
+    "crosstab4",
+    "connectby",
     "readfile",
     "writefile",
     "load_extension",
@@ -103,7 +121,10 @@ _UNICODE_ESCAPE_RE = re.compile(
     r"\\(?:\+([0-9A-Fa-f]{6})|([0-9A-Fa-f]{4}))",
 )
 
-_LIMIT_RE = re.compile(r"\blimit\b\s+(\d+)\b", re.IGNORECASE)
+_LIMIT_KEYWORD_RE = re.compile(r"\blimit\b", re.IGNORECASE)
+# After a literal LIMIT n, only clause boundaries / subquery closers are valid.
+# Reject expressions such as LIMIT 1+999999 or LIMIT 200*200 that bypass max_limit.
+_AFTER_LIMIT_OK_RE = re.compile(r"^(?:offset|fetch|for)\b|^[),]", re.IGNORECASE)
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
 # Include optional LATERAL / ONLY so JOIN LATERAL users is not truncated to "LATERAL".
 _JOIN_RE = re.compile(
@@ -338,14 +359,22 @@ def _extract_tables(sql_text: str) -> set[str]:
     return tables
 
 
-def _extract_limit(sql_text: str) -> Optional[int]:
-    m = _LIMIT_RE.search(sql_text)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except ValueError:
-        return None
+def _extract_limits(sql_text: str) -> list[int]:
+    """
+    Return every LIMIT value. Only bare integer literals are accepted so
+    expressions like LIMIT 1+N cannot bypass max_limit while still executing.
+    """
+    values: list[int] = []
+    for match in _LIMIT_KEYWORD_RE.finditer(sql_text):
+        rest = sql_text[match.end() :].lstrip()
+        literal = re.match(r"(\d+)", rest)
+        if not literal:
+            raise ValueError("LIMIT must be a literal integer.")
+        after = rest[literal.end() :].lstrip()
+        if after and not _AFTER_LIMIT_OK_RE.match(after):
+            raise ValueError("LIMIT must be a literal integer.")
+        values.append(int(literal.group(1)))
+    return values
 
 
 @dataclass(frozen=True)
@@ -389,13 +418,13 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
-    lim = _extract_limit(cleaned)
+    limits = _extract_limits(cleaned)
     if policy.allowed_tables is not None and not tables:
         raise ValueError("Query must reference an allowed table.")
     if tables:
-        if lim is None:
+        if not limits:
             raise ValueError("LIMIT clause is required.")
-        if lim > policy.max_limit:
+        if any(lim > policy.max_limit for lim in limits):
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
