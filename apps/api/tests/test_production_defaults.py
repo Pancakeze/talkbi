@@ -18,6 +18,15 @@ def test_staging_rejects_default_secret_key():
         Settings(environment="staging").validate_production_safety()
 
 
+def test_production_rejects_empty_or_short_secret_key():
+    # Empty/weak keys still mint valid HS256 JWTs — reject them in protected envs.
+    for secret in ("", "   ", "x", "short-but-not-default-key"):
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            Settings(environment="production", secret_key=secret).validate_production_safety()
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            Settings(environment="staging", secret_key=secret).validate_production_safety()
+
+
 def test_production_accepts_custom_secret_key():
     Settings(
         environment="production",
