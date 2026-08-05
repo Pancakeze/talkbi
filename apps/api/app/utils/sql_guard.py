@@ -98,9 +98,16 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_wal_replay_pause",
     "pg_create_restore_point",
     "pg_advisory_lock",
+    "pg_advisory_lock_shared",
     "pg_advisory_unlock",
+    "pg_advisory_unlock_shared",
     "pg_advisory_xact_lock",
+    "pg_advisory_xact_lock_shared",
     "pg_advisory_unlock_all",
+    "pg_try_advisory_lock",
+    "pg_try_advisory_lock_shared",
+    "pg_try_advisory_xact_lock",
+    "pg_try_advisory_xact_lock_shared",
     # tablefunc helpers: crosstab runs caller SQL text; connectby takes a table name.
     "crosstab",
     "crosstab2",
@@ -122,6 +129,10 @@ _UNICODE_ESCAPE_RE = re.compile(
 )
 
 _LIMIT_KEYWORD_RE = re.compile(r"\blimit\b", re.IGNORECASE)
+# PostgreSQL SQL-standard row bound: FETCH { FIRST | NEXT } [ count ] { ROW | ROWS } ...
+# Equivalent to LIMIT and must be enforced the same way (including nested LIMITs).
+_FETCH_KEYWORD_RE = re.compile(r"\bfetch\s+(?:first|next)\b", re.IGNORECASE)
+_FETCH_ROW_TAIL_RE = re.compile(r"^rows?\s+(?:only|with\s+ties)\b", re.IGNORECASE)
 # After a literal LIMIT n, only clause boundaries / subquery closers are valid.
 # Reject expressions such as LIMIT 1+999999 or LIMIT 200*200 that bypass max_limit.
 _AFTER_LIMIT_OK_RE = re.compile(r"^(?:offset|fetch|for)\b|^[),]", re.IGNORECASE)
@@ -377,6 +388,36 @@ def _extract_limits(sql_text: str) -> list[int]:
     return values
 
 
+def _extract_fetches(sql_text: str) -> list[int]:
+    """
+    Return every FETCH FIRST/NEXT row count (PostgreSQL's LIMIT equivalent).
+
+    Bare omitted counts default to 1. Expressions such as FETCH FIRST (100*100)
+    must be rejected so they cannot bypass max_limit while still executing.
+    """
+    values: list[int] = []
+    for match in _FETCH_KEYWORD_RE.finditer(sql_text):
+        rest = sql_text[match.end() :].lstrip()
+        literal = re.match(r"(\d+)\s+", rest)
+        if literal:
+            after = rest[literal.end() :].lstrip()
+            if not _FETCH_ROW_TAIL_RE.match(after):
+                raise ValueError("FETCH row count must be a literal integer.")
+            values.append(int(literal.group(1)))
+            continue
+        if _FETCH_ROW_TAIL_RE.match(rest):
+            # FETCH FIRST ROW ONLY / FETCH NEXT ROWS ONLY → count defaults to 1
+            values.append(1)
+            continue
+        raise ValueError("FETCH row count must be a literal integer.")
+    return values
+
+
+def _extract_row_bounds(sql_text: str) -> list[int]:
+    """All LIMIT and FETCH FIRST/NEXT bounds that cap returned rows."""
+    return _extract_limits(sql_text) + _extract_fetches(sql_text)
+
+
 @dataclass(frozen=True)
 class SQLGuardPolicy:
     max_limit: int = 1000
@@ -418,13 +459,13 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
-    limits = _extract_limits(cleaned)
+    row_bounds = _extract_row_bounds(cleaned)
     if policy.allowed_tables is not None and not tables:
         raise ValueError("Query must reference an allowed table.")
     if tables:
-        if not limits:
+        if not row_bounds:
             raise ValueError("LIMIT clause is required.")
-        if any(lim > policy.max_limit for lim in limits):
+        if any(lim > policy.max_limit for lim in row_bounds):
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
