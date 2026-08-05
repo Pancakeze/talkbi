@@ -323,6 +323,48 @@ def test_validate_sql_rejects_limit_expressions_that_bypass_max_limit():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_fetch_first_that_bypasses_max_limit():
+    """
+    PostgreSQL FETCH FIRST/NEXT is LIMIT-equivalent. A nested LIMIT 1 must not
+    satisfy the guard while an outer FETCH FIRST 50000 still returns huge rowsets
+    that chat materializes into memory.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    validate_sql(
+        'SELECT a FROM "staging"."ds_1_t" FETCH FIRST 200 ROWS ONLY',
+        policy=policy,
+    )
+    validate_sql(
+        'SELECT a FROM "staging"."ds_1_t" FETCH NEXT ROW ONLY',
+        policy=policy,
+    )
+    for sql in (
+        (
+            'SELECT * FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1) '
+            "FETCH FIRST 50000 ROWS ONLY"
+        ),
+        (
+            'SELECT * FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1) '
+            "OFFSET 0 FETCH NEXT 50000 ROW ONLY"
+        ),
+        'SELECT a FROM "staging"."ds_1_t" FETCH FIRST 999999 ROWS ONLY',
+        'SELECT a FROM "staging"."ds_1_t" ORDER BY 1 FETCH FIRST 50000 ROWS WITH TIES',
+        (
+            'SELECT * FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1) '
+            "FETCH FIRST (100*100) ROWS ONLY"
+        ),
+    ):
+        with pytest.raises(ValueError, match="LIMIT|FETCH"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),
@@ -335,6 +377,10 @@ def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
         'SELECT pg_promote() FROM "staging"."ds_1_t" LIMIT 1',
         'SELECT pg_switch_wal() FROM "staging"."ds_1_t" LIMIT 1',
         'SELECT pg_advisory_lock(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_advisory_lock_shared(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_try_advisory_lock(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_try_advisory_lock_shared(1) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_advisory_xact_lock_shared(1) FROM "staging"."ds_1_t" LIMIT 1',
         (
             "SELECT crosstab(concat('SELECT username::text, ''c''::text, "
             "hashed_password::text FRO','M users')) "
