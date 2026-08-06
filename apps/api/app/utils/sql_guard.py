@@ -370,52 +370,99 @@ def _extract_tables(sql_text: str) -> set[str]:
     return tables
 
 
-def _extract_limits(sql_text: str) -> list[int]:
+def _paren_depth_at_positions(sql_text: str) -> list[int]:
     """
-    Return every LIMIT value. Only bare integer literals are accepted so
+    Return the parenthesis nesting depth at each character index.
+
+    Depth ignores quoted spans so identifiers/literals containing '(' do not
+    skew top-level LIMIT/FETCH detection.
+    """
+    depths = [0] * len(sql_text)
+    depth = 0
+    quote: str | None = None
+    for idx, ch in enumerate(sql_text):
+        depths[idx] = depth
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "'", "`"):
+            quote = ch
+            continue
+        if ch == "(":
+            depth += 1
+            continue
+        if ch == ")":
+            depth = max(depth - 1, 0)
+    return depths
+
+
+def _parse_limit_at(sql_text: str, match_end: int) -> int:
+    rest = sql_text[match_end:].lstrip()
+    literal = re.match(r"(\d+)", rest)
+    if not literal:
+        raise ValueError("LIMIT must be a literal integer.")
+    after = rest[literal.end() :].lstrip()
+    if after and not _AFTER_LIMIT_OK_RE.match(after):
+        raise ValueError("LIMIT must be a literal integer.")
+    return int(literal.group(1))
+
+
+def _parse_fetch_at(sql_text: str, match_end: int) -> int:
+    rest = sql_text[match_end:].lstrip()
+    literal = re.match(r"(\d+)\s+", rest)
+    if literal:
+        after = rest[literal.end() :].lstrip()
+        if not _FETCH_ROW_TAIL_RE.match(after):
+            raise ValueError("FETCH row count must be a literal integer.")
+        return int(literal.group(1))
+    if _FETCH_ROW_TAIL_RE.match(rest):
+        # FETCH FIRST ROW ONLY / FETCH NEXT ROWS ONLY → count defaults to 1
+        return 1
+    raise ValueError("FETCH row count must be a literal integer.")
+
+
+def _extract_limits(sql_text: str, *, top_level_only: bool = False) -> list[int]:
+    """
+    Return LIMIT values. Only bare integer literals are accepted so
     expressions like LIMIT 1+N cannot bypass max_limit while still executing.
+
+    When top_level_only is set, nested subquery LIMITs are ignored so they
+    cannot satisfy the required outer row bound.
     """
+    depths = _paren_depth_at_positions(sql_text) if top_level_only else None
     values: list[int] = []
     for match in _LIMIT_KEYWORD_RE.finditer(sql_text):
-        rest = sql_text[match.end() :].lstrip()
-        literal = re.match(r"(\d+)", rest)
-        if not literal:
-            raise ValueError("LIMIT must be a literal integer.")
-        after = rest[literal.end() :].lstrip()
-        if after and not _AFTER_LIMIT_OK_RE.match(after):
-            raise ValueError("LIMIT must be a literal integer.")
-        values.append(int(literal.group(1)))
+        if depths is not None and depths[match.start()] != 0:
+            continue
+        values.append(_parse_limit_at(sql_text, match.end()))
     return values
 
 
-def _extract_fetches(sql_text: str) -> list[int]:
+def _extract_fetches(sql_text: str, *, top_level_only: bool = False) -> list[int]:
     """
-    Return every FETCH FIRST/NEXT row count (PostgreSQL's LIMIT equivalent).
+    Return FETCH FIRST/NEXT row counts (PostgreSQL's LIMIT equivalent).
 
     Bare omitted counts default to 1. Expressions such as FETCH FIRST (100*100)
     must be rejected so they cannot bypass max_limit while still executing.
+
+    When top_level_only is set, nested FETCH clauses are ignored so they cannot
+    satisfy the required outer row bound.
     """
+    depths = _paren_depth_at_positions(sql_text) if top_level_only else None
     values: list[int] = []
     for match in _FETCH_KEYWORD_RE.finditer(sql_text):
-        rest = sql_text[match.end() :].lstrip()
-        literal = re.match(r"(\d+)\s+", rest)
-        if literal:
-            after = rest[literal.end() :].lstrip()
-            if not _FETCH_ROW_TAIL_RE.match(after):
-                raise ValueError("FETCH row count must be a literal integer.")
-            values.append(int(literal.group(1)))
+        if depths is not None and depths[match.start()] != 0:
             continue
-        if _FETCH_ROW_TAIL_RE.match(rest):
-            # FETCH FIRST ROW ONLY / FETCH NEXT ROWS ONLY → count defaults to 1
-            values.append(1)
-            continue
-        raise ValueError("FETCH row count must be a literal integer.")
+        values.append(_parse_fetch_at(sql_text, match.end()))
     return values
 
 
-def _extract_row_bounds(sql_text: str) -> list[int]:
-    """All LIMIT and FETCH FIRST/NEXT bounds that cap returned rows."""
-    return _extract_limits(sql_text) + _extract_fetches(sql_text)
+def _extract_row_bounds(sql_text: str, *, top_level_only: bool = False) -> list[int]:
+    """LIMIT and FETCH FIRST/NEXT bounds that cap returned rows."""
+    return _extract_limits(sql_text, top_level_only=top_level_only) + _extract_fetches(
+        sql_text, top_level_only=top_level_only
+    )
 
 
 @dataclass(frozen=True)
@@ -459,13 +506,17 @@ def validate_sql(
         raise ValueError("Unsafe SQL detected.")
 
     tables = _extract_tables(cleaned)
-    row_bounds = _extract_row_bounds(cleaned)
+    # Validate every LIMIT/FETCH literal (including nested) against max_limit so
+    # expressions/huge nested bounds cannot slip through, but require a
+    # top-level bound so nested LIMIT 1 cannot leave the outer result unbounded.
+    all_row_bounds = _extract_row_bounds(cleaned, top_level_only=False)
+    top_level_row_bounds = _extract_row_bounds(cleaned, top_level_only=True)
     if policy.allowed_tables is not None and not tables:
         raise ValueError("Query must reference an allowed table.")
     if tables:
-        if not row_bounds:
+        if not top_level_row_bounds:
             raise ValueError("LIMIT clause is required.")
-        if any(lim > policy.max_limit for lim in row_bounds):
+        if any(lim > policy.max_limit for lim in all_row_bounds):
             raise ValueError("LIMIT is too large.")
     if policy.allowed_tables is not None:
         norm_allowed = policy.allowed_tables
