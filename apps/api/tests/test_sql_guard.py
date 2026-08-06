@@ -365,6 +365,56 @@ def test_validate_sql_rejects_fetch_first_that_bypasses_max_limit():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_nested_limit_that_leaves_outer_unbounded():
+    """
+    A subquery LIMIT must not satisfy the required row bound: chat materializes
+    every returned row, so an outer SELECT without LIMIT/FETCH can OOM on a
+    large staging sheet (up to MAX_ROWS_PER_SHEET).
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    # Nested + outer bound remains valid.
+    validate_sql(
+        (
+            'SELECT a FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1) LIMIT 50'
+        ),
+        policy=policy,
+    )
+    validate_sql(
+        (
+            'SELECT a FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1) '
+            "FETCH FIRST 50 ROWS ONLY"
+        ),
+        policy=policy,
+    )
+    for sql in (
+        (
+            'SELECT * FROM "staging"."ds_1_t" WHERE EXISTS '
+            '(SELECT 1 FROM "staging"."ds_1_t" LIMIT 1)'
+        ),
+        (
+            'SELECT * FROM "staging"."ds_1_t" WHERE id IN '
+            '(SELECT id FROM "staging"."ds_1_t" LIMIT 1)'
+        ),
+        (
+            'SELECT a.* FROM "staging"."ds_1_t" a JOIN '
+            '(SELECT * FROM "staging"."ds_1_t" LIMIT 1) b ON true'
+        ),
+        'SELECT * FROM (SELECT * FROM "staging"."ds_1_t" LIMIT 1) x',
+        (
+            'WITH x AS (SELECT * FROM "staging"."ds_1_t" LIMIT 1) '
+            'SELECT * FROM "staging"."ds_1_t"'
+        ),
+    ):
+        with pytest.raises(ValueError, match="LIMIT"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),
