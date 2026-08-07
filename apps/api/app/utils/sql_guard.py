@@ -303,6 +303,24 @@ def _first_table_ident(table_ref: str) -> str | None:
             ident = _normalize_ident(shorthand.group(1))
             if ident:
                 return ident
+        # Subquery / row constructor — inner FROM/JOIN scan covers SELECT forms.
+        if re.match(r"(?:select|with|values)\b", inner, re.IGNORECASE):
+            return None
+        # SQLite accepts parenthesized relation refs such as (users) / ("users")
+        # / (main.users). Skipping these previously let LLM SQL join the users
+        # table while only the staging allowlist entry was extracted.
+        paren_rel = _ONLY_PAREN_RELATION_RE.match(ref)
+        if paren_rel:
+            ident = _normalize_ident(paren_rel.group(1))
+            return ident or None
+        only_inside = re.match(
+            rf"^\(\s*only\s+({_RELATION_IDENT})\s*\)",
+            ref,
+            re.IGNORECASE,
+        )
+        if only_inside:
+            ident = _normalize_ident(only_inside.group(1))
+            return ident or None
         return None
 
     parts = ref.split()
@@ -313,8 +331,11 @@ def _first_table_ident(table_ref: str) -> str | None:
     # JOIN/FROM items may be written as: LATERAL ONLY schema.table
     if parts[idx].lower() == "lateral":
         idx += 1
-        if idx >= len(parts) or parts[idx].startswith("("):
+        if idx >= len(parts):
             return None
+        # LATERAL (subquery|relation) — reuse parenthesized parsing.
+        if parts[idx].startswith("("):
+            return _first_table_ident(" ".join(parts[idx:]))
     if parts[idx].lower() == "only":
         idx += 1
         if idx >= len(parts):
