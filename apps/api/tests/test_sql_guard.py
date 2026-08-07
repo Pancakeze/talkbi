@@ -323,6 +323,40 @@ def test_validate_sql_rejects_limit_expressions_that_bypass_max_limit():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_limit_offset_comma_count_bypass():
+    """
+    SQLite (and MySQL) accept LIMIT offset, count. If the guard treats a trailing
+    comma as harmless and only parses the first integer, LIMIT 0, 50000 looks like
+    lim=0 while SQLite returns 50000 rows that chat materializes into memory.
+
+    Subquery forms that put `)` between LIMIT and an outer SELECT-list comma must
+    still be accepted: (SELECT ... LIMIT 1), col ...
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    validate_sql(
+        'SELECT (SELECT a FROM "staging"."ds_1_t" LIMIT 1), a '
+        'FROM "staging"."ds_1_t" LIMIT 10',
+        policy=policy,
+    )
+    validate_sql(
+        'SELECT a FROM "staging"."ds_1_t" LIMIT 200 OFFSET 10',
+        policy=policy,
+    )
+    for sql in (
+        'SELECT * FROM "staging"."ds_1_t" LIMIT 0, 50000',
+        'SELECT * FROM "staging"."ds_1_t" LIMIT 1, 9999',
+        'SELECT * FROM "staging"."ds_1_t" LIMIT 10, 201',
+        'SELECT * FROM "staging"."ds_1_t" LIMIT 0,200',
+        'SELECT * FROM "staging"."ds_1_t" LIMIT 5 , 10',
+    ):
+        with pytest.raises(ValueError, match="LIMIT"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_fetch_first_that_bypasses_max_limit():
     """
     PostgreSQL FETCH FIRST/NEXT is LIMIT-equivalent. A nested LIMIT 1 must not
