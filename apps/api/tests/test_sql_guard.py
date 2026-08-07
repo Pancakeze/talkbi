@@ -173,6 +173,42 @@ def test_validate_sql_rejects_table_shorthand_allowlist_bypass():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_parenthesized_relation_allowlist_bypass():
+    """
+    SQLite accepts FROM/JOIN (users) as a real table reference. The guard used to
+    skip parenthesized refs that were not TABLE shorthand / SELECT subqueries, so
+    LLM SQL like SELECT * FROM ds_1_t, (users) u LIMIT 1 passed the staging
+    allowlist while returning users.hashed_password in chat rows.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    validate_sql(
+        'SELECT * FROM ds_1_t, (SELECT id FROM ds_1_t LIMIT 1) x LIMIT 1',
+        policy=policy,
+    )
+    validate_sql(
+        'SELECT * FROM ds_1_t, (VALUES (1)) v LIMIT 1',
+        policy=policy,
+    )
+    for sql in (
+        'SELECT * FROM ds_1_t, (users) u LIMIT 1',
+        'SELECT * FROM "ds_1_t", (users) LIMIT 1',
+        'SELECT * FROM ds_1_t JOIN (users) u ON true LIMIT 1',
+        'SELECT * FROM ds_1_t CROSS JOIN (users) LIMIT 1',
+        'SELECT * FROM ds_1_t LEFT JOIN (users) u ON ds_1_t.id = u.id LIMIT 1',
+        'SELECT * FROM ds_1_t, ("users") u LIMIT 1',
+        'SELECT * FROM ds_1_t, ( main.users ) u LIMIT 1',
+        'SELECT * FROM (users) LIMIT 1',
+        'SELECT hashed_password FROM (users) LIMIT 1',
+        'SELECT * FROM ds_1_t, LATERAL (users) u LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Table is not allowed|Query must reference"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_lateral_join_allowlist_bypass():
     """JOIN LATERAL <table> must still enforce the table allowlist."""
     policy = SQLGuardPolicy(
