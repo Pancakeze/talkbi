@@ -135,7 +135,10 @@ _FETCH_KEYWORD_RE = re.compile(r"\bfetch\s+(?:first|next)\b", re.IGNORECASE)
 _FETCH_ROW_TAIL_RE = re.compile(r"^rows?\s+(?:only|with\s+ties)\b", re.IGNORECASE)
 # After a literal LIMIT n, only clause boundaries / subquery closers are valid.
 # Reject expressions such as LIMIT 1+999999 or LIMIT 200*200 that bypass max_limit.
-_AFTER_LIMIT_OK_RE = re.compile(r"^(?:offset|fetch|for)\b|^[),]", re.IGNORECASE)
+# Do NOT allow a bare comma here: SQLite/MySQL `LIMIT offset, count` would otherwise
+# parse only the offset (e.g. LIMIT 0, 50000 → lim=0) while returning `count` rows.
+# Subquery forms like (SELECT ... LIMIT 1), outer_col still work via the `)` alternative.
+_AFTER_LIMIT_OK_RE = re.compile(r"^(?:offset|fetch|for)\b|^\)", re.IGNORECASE)
 _FROM_RE = re.compile(r"\bfrom\b", re.IGNORECASE)
 # Include optional LATERAL / ONLY so JOIN LATERAL users is not truncated to "LATERAL".
 _JOIN_RE = re.compile(
