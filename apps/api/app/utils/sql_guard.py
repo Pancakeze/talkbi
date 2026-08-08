@@ -24,6 +24,10 @@ _FORBIDDEN_KEYWORDS = (
     "detach",
     "vacuum",
     "analyze",
+    # Custom U& escape selector. Default U&"\\xxxx" decoding is enough for
+    # legitimate identifiers; UESCAPE enables denylist-hiding variants the
+    # scanner might not fully normalize (e.g. UESCAPE E'\\\\').
+    "uescape",
 )
 
 _FORBIDDEN_FUNCTIONS = (
@@ -127,6 +131,12 @@ _FORBIDDEN_FUNCTION_RE = re.compile(
 _UNICODE_ESCAPE_RE = re.compile(
     r"\\(?:\+([0-9A-Fa-f]{6})|([0-9A-Fa-f]{4}))",
 )
+# Custom-escape form: U&"table!005fto!005fxml" UESCAPE '!'
+# Without decoding, denylisted names never appear as literal text.
+_UAND_IDENT_RE = re.compile(
+    r"U&\"([^\"]*)\"(?:\s*UESCAPE\s+'(.)')?",
+    re.IGNORECASE,
+)
 
 _LIMIT_KEYWORD_RE = re.compile(r"\blimit\b", re.IGNORECASE)
 # PostgreSQL SQL-standard row bound: FETCH { FIRST | NEXT } [ count ] { ROW | ROWS } ...
@@ -200,8 +210,13 @@ def _normalize_ident(token: str) -> str:
     return t
 
 
-def _decode_postgres_unicode_escapes(sql_text: str) -> str:
+def _decode_postgres_unicode_escapes(sql_text: str, *, escape_char: str = "\\") -> str:
     """Decode PostgreSQL U& unicode escapes so denylist matching sees real names."""
+    if not escape_char or len(escape_char) != 1:
+        return sql_text
+    pattern = re.compile(
+        re.escape(escape_char) + r"(?:\+([0-9A-Fa-f]{6})|([0-9A-Fa-f]{4}))",
+    )
 
     def _repl(match: re.Match[str]) -> str:
         hex_digits = match.group(1) or match.group(2)
@@ -210,7 +225,23 @@ def _decode_postgres_unicode_escapes(sql_text: str) -> str:
         except ValueError:
             return match.group(0)
 
-    return _UNICODE_ESCAPE_RE.sub(_repl, sql_text)
+    return pattern.sub(_repl, sql_text)
+
+
+def _expand_postgres_uand_identifiers(sql_text: str) -> str:
+    """
+    Expand U&"..." [UESCAPE 'x'] identifiers to their decoded names.
+
+    Default U& escapes use backslash; attackers can also choose a custom escape
+    via UESCAPE, e.g. U&"table!005fto!005fxml" UESCAPE '!' → table_to_xml.
+    """
+
+    def _repl(match: re.Match[str]) -> str:
+        body = match.group(1)
+        escape_char = match.group(2) or "\\"
+        return _decode_postgres_unicode_escapes(body, escape_char=escape_char)
+
+    return _UAND_IDENT_RE.sub(_repl, sql_text)
 
 
 def _sql_for_function_scan(sql_text: str) -> str:
@@ -218,10 +249,11 @@ def _sql_for_function_scan(sql_text: str) -> str:
     Strip identifier quoting so denylisted calls still match when written as
     "table_to_xml"(...) or pg_catalog."pg_read_file"(...).
 
-    Also decode U&"table\\005fto\\005fxml" style unicode escapes that would
+    Also decode U&"table\\005fto\\005fxml" and custom UESCAPE forms that would
     otherwise hide denylisted names from a literal regex match.
     """
-    return _decode_postgres_unicode_escapes(sql_text.replace('"', "").replace("`", ""))
+    expanded = _expand_postgres_uand_identifiers(sql_text)
+    return _decode_postgres_unicode_escapes(expanded.replace('"', "").replace("`", ""))
 
 
 def _keyword_at(sql_text: str, idx: int, keyword: str) -> bool:

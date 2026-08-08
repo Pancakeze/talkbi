@@ -273,6 +273,37 @@ def test_validate_sql_rejects_unicode_escaped_forbidden_functions():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_custom_uescape_forbidden_functions():
+    """
+    Custom UESCAPE must not hide denylisted function names.
+
+    PostgreSQL accepts U&"table!005fto!005fxml" UESCAPE '!' as table_to_xml(...),
+    which dumps arbitrary relations without putting them in FROM/JOIN.
+    """
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT U&"table!005fto!005fxml" UESCAPE \'!\'(\'users\'::regclass, true, true, \'\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"pg!005fread!005ffile" UESCAPE \'!\'(\'/etc/passwd\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"lo!005fexport" UESCAPE \'!\'(1, \'/tmp/x\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"table#005fto#005fxml" UESCAPE \'#\'(\'users\'::regclass, true, true, \'\') '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_catalog.U&"query!005fto!005fxml"UESCAPE\'!\'('
+        "concat('SELECT 1'), true, true, '') "
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        # Default-looking escapes with an explicit UESCAPE backslash must still decode.
+        "SELECT U&\"table\\005fto\\005fxml\" UESCAPE E'\\\\'('users'::regclass, true, true, '') "
+        'FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_additional_lo_dblink_and_admin_functions():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),
