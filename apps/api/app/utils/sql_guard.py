@@ -33,6 +33,8 @@ _FORBIDDEN_KEYWORDS = (
 _FORBIDDEN_FUNCTIONS = (
     "pg_sleep",
     "pg_read_file",
+    # adminpack 1.0 compatibility alias — same C implementation as pg_read_file
+    "pg_read_file_old",
     "pg_read_binary_file",
     "pg_ls_dir",
     "pg_stat_file",
@@ -94,9 +96,12 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_terminate_backend",
     "pg_cancel_backend",
     "pg_sleep_for",
+    "pg_sleep_until",
     "set_config",
     "pg_reload_conf",
     "pg_rotate_logfile",
+    # adminpack 1.0 compatibility alias for pg_rotate_logfile
+    "pg_rotate_logfile_old",
     "pg_promote",
     "pg_switch_wal",
     "pg_wal_replay_pause",
