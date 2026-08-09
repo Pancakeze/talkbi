@@ -322,6 +322,30 @@ def test_validate_sql_rejects_additional_lo_dblink_and_admin_functions():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_pg_read_file_old_adminpack_alias():
+    """
+    PostgreSQL keeps pg_read_file_old as an adminpack 1.0 compatibility alias
+    that still executes the pg_read_file implementation. Denylisting only
+    pg_read_file left a concrete chat SQL bypass that returns server file
+    contents when the DB role can read files (default docker superuser).
+    """
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT pg_read_file_old(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_catalog.pg_read_file_old(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT "pg_read_file_old"(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"pg\\005fread\\005ffile\\005fold"(\'/etc/passwd\', 0, 100000) '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_sleep_until(now() + interval \'1 hour\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_rotate_logfile_old() FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_ts_stat_nested_sql_allowlist_bypass():
     """ts_stat executes a text SQL query via SPI; FROM can be hidden in the string."""
     policy = SQLGuardPolicy(
