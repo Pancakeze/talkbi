@@ -35,10 +35,16 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_read_file",
     # adminpack 1.0 compatibility alias — same C implementation as pg_read_file
     "pg_read_file_old",
+    # adminpack 1.0 SQL name — prosrc still points at pg_read_file
+    "pg_file_read",
     "pg_read_binary_file",
     "pg_ls_dir",
     "pg_stat_file",
+    # adminpack 1.0 wrapper around pg_stat_file(...).size
+    "pg_file_length",
     "pg_ls_logdir",
+    # adminpack SQL name for listing the log directory (sibling of pg_ls_logdir)
+    "pg_logdir_ls",
     "pg_ls_waldir",
     "pg_ls_archive_statusdir",
     "pg_ls_tmpdir",
@@ -102,6 +108,8 @@ _FORBIDDEN_FUNCTIONS = (
     "pg_rotate_logfile",
     # adminpack 1.0 compatibility alias for pg_rotate_logfile
     "pg_rotate_logfile_old",
+    # adminpack 1.0 SQL name — prosrc still points at pg_rotate_logfile
+    "pg_logfile_rotate",
     "pg_promote",
     "pg_switch_wal",
     "pg_wal_replay_pause",
