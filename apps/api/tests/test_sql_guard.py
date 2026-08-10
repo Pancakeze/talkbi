@@ -346,6 +346,33 @@ def test_validate_sql_rejects_pg_read_file_old_adminpack_alias():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_pg_file_read_adminpack_alias():
+    """
+    adminpack 1.0 registers pg_file_read as an SQL-callable alias whose prosrc
+    is still pg_read_file. The guard already blocked pg_read_file / pg_read_file_old
+    and pg_file_write, but missed this read-side name — chat SQL could return
+    server file contents under a privileged DB role.
+    """
+    policy = SQLGuardPolicy(
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    for sql in (
+        'SELECT pg_file_read(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_catalog.pg_file_read(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT "pg_file_read"(\'/etc/passwd\', 0, 100000) FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"pg\\005ffile\\005fread"(\'/etc/passwd\', 0, 100000) '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT U&"pg!005ffile!005fread" UESCAPE \'!\'(\'/etc/passwd\', 0, 100000) '
+        'FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_file_length(\'/etc/passwd\') FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_logdir_ls() FROM "staging"."ds_1_t" LIMIT 1',
+        'SELECT pg_logfile_rotate() FROM "staging"."ds_1_t" LIMIT 1',
+    ):
+        with pytest.raises(ValueError, match="Unsafe SQL"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_ts_stat_nested_sql_allowlist_bypass():
     """ts_stat executes a text SQL query via SPI; FROM can be hidden in the string."""
     policy = SQLGuardPolicy(
