@@ -335,38 +335,83 @@ def _split_top_level_commas(sql_text: str) -> list[str]:
     return parts
 
 
+def _closing_paren_index(sql_text: str, open_idx: int = 0) -> int | None:
+    """Return the index of the parenthesis that matches sql_text[open_idx]."""
+    if open_idx >= len(sql_text) or sql_text[open_idx] != "(":
+        return None
+    depth = 0
+    quote: str | None = None
+    for idx in range(open_idx, len(sql_text)):
+        ch = sql_text[idx]
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "'", "`"):
+            quote = ch
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx
+    return None
+
+
+def _split_top_level_joins(sql_text: str) -> list[str]:
+    """Split a FROM-list fragment on JOIN keywords that are outside parentheses."""
+    parts: list[str] = []
+    depth = 0
+    quote: str | None = None
+    start = 0
+    idx = 0
+    while idx < len(sql_text):
+        ch = sql_text[idx]
+        if quote:
+            if ch == quote:
+                quote = None
+            idx += 1
+            continue
+        if ch in ('"', "'", "`"):
+            quote = ch
+            idx += 1
+            continue
+        if ch == "(":
+            depth += 1
+            idx += 1
+            continue
+        if ch == ")":
+            depth = max(depth - 1, 0)
+            idx += 1
+            continue
+        if depth == 0 and _keyword_at(sql_text, idx, "join"):
+            parts.append(sql_text[start:idx])
+            idx += 4
+            start = idx
+            continue
+        idx += 1
+    parts.append(sql_text[start:])
+    return parts
+
+
+def _split_from_items(from_clause: str) -> list[str]:
+    items: list[str] = []
+    for comma_part in _split_top_level_commas(from_clause):
+        items.extend(_split_top_level_joins(comma_part))
+    return [p for p in items if p.strip()]
+
+
 def _first_table_ident(table_ref: str) -> str | None:
     ref = table_ref.strip()
     if not ref:
         return None
 
-    # Parenthesized TABLE shorthand: (TABLE users) alias
+    # Parenthesized TABLE shorthand / relation / subquery. Nested parens and
+    # aliases inside the group are handled by _collect_table_idents.
     if ref.startswith("("):
-        inner = ref[1:].lstrip()
-        shorthand = _TABLE_SHORTHAND_RE.match(inner)
-        if shorthand:
-            ident = _normalize_ident(shorthand.group(1))
-            if ident:
-                return ident
-        # Subquery / row constructor — inner FROM/JOIN scan covers SELECT forms.
-        if re.match(r"(?:select|with|values)\b", inner, re.IGNORECASE):
-            return None
-        # SQLite accepts parenthesized relation refs such as (users) / ("users")
-        # / (main.users). Skipping these previously let LLM SQL join the users
-        # table while only the staging allowlist entry was extracted.
-        paren_rel = _ONLY_PAREN_RELATION_RE.match(ref)
-        if paren_rel:
-            ident = _normalize_ident(paren_rel.group(1))
-            return ident or None
-        only_inside = re.match(
-            rf"^\(\s*only\s+({_RELATION_IDENT})\s*\)",
-            ref,
-            re.IGNORECASE,
-        )
-        if only_inside:
-            ident = _normalize_ident(only_inside.group(1))
-            return ident or None
-        return None
+        idents = _collect_table_idents(ref)
+        return idents[0] if idents else None
 
     parts = ref.split()
     if not parts:
@@ -413,19 +458,54 @@ def _first_table_ident(table_ref: str) -> str | None:
     return ident
 
 
+def _collect_table_idents(table_ref: str) -> list[str]:
+    """
+    Extract every relation identifier from a FROM/JOIN item.
+
+    SQLite (and PostgreSQL parenthesized table_ref) accept nested groups such
+    as ((users)), (users u), and (ds_1_t, users). A one-level (ident) matcher
+    misses those and lets comma/join with a staging table pass the allowlist.
+    """
+    ref = table_ref.strip()
+    if not ref:
+        return []
+
+    while True:
+        stripped = ref.lstrip()
+        prefix = re.match(r"^(?:lateral|only)\b\s*", stripped, re.IGNORECASE)
+        if not prefix:
+            ref = stripped
+            break
+        ref = stripped[prefix.end() :]
+    if not ref:
+        return []
+
+    if ref.startswith("("):
+        close = _closing_paren_index(ref, 0)
+        if close is None:
+            return []
+        inner = ref[1:close].strip()
+        # Subquery / row constructor — inner FROM/JOIN scan covers SELECT forms.
+        if re.match(r"(?:select|with|values)\b", inner, re.IGNORECASE):
+            return []
+        idents: list[str] = []
+        for part in _split_from_items(inner):
+            idents.extend(_collect_table_idents(part))
+        return idents
+
+    ident = _first_table_ident(ref)
+    return [ident] if ident else []
+
+
 def _extract_tables(sql_text: str) -> set[str]:
     tables: set[str] = set()
     for match in _FROM_RE.finditer(sql_text):
         clause_end = _find_from_clause_end(sql_text, match.end())
         from_clause = sql_text[match.end() : clause_end]
-        for table_ref in _split_top_level_commas(from_clause):
-            ident = _first_table_ident(table_ref)
-            if ident:
-                tables.add(ident)
+        for table_ref in _split_from_items(from_clause):
+            tables.update(_collect_table_idents(table_ref))
     for raw in _JOIN_RE.findall(sql_text):
-        ident = _first_table_ident(raw)
-        if ident:
-            tables.add(ident)
+        tables.update(_collect_table_idents(raw))
     # Catch TABLE shorthand even when JOIN regex only tokenizes "(TABLE".
     for raw in _TABLE_SHORTHAND_RE.findall(sql_text):
         ident = _normalize_ident(raw)
