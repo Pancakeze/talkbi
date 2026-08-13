@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from app.utils.sql_guard import SQLGuardPolicy, validate_sql
@@ -205,6 +207,58 @@ def test_validate_sql_rejects_parenthesized_relation_allowlist_bypass():
         'SELECT hashed_password FROM (users) LIMIT 1',
         'SELECT * FROM ds_1_t, LATERAL (users) u LIMIT 1',
     ):
+        with pytest.raises(ValueError, match="Table is not allowed|Query must reference"):
+            validate_sql(sql, policy=policy)
+
+
+def test_validate_sql_rejects_nested_parenthesized_relation_allowlist_bypass():
+    """
+    SQLite's table-or-subquery grammar is recursive: ((users)), (users u),
+    (users AS u), and (ds_1_t, users) are real table references. The one-level
+    (ident) extractor treated those as opaque, so LLM SQL that comma/join-ed
+    them with the staging table passed the allowlist while sqlite returned
+    users.hashed_password.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    validate_sql(
+        'SELECT * FROM ((ds_1_t)) t LIMIT 1',
+        policy=policy,
+    )
+    validate_sql(
+        'SELECT * FROM ds_1_t, (ds_1_t t) x LIMIT 1',
+        policy=policy,
+    )
+
+    bypasses = (
+        'SELECT hashed_password FROM ds_1_t, ((users)) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (((users))) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, ( ( users ) ) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (( users )) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (("users")) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, ((main.users)) u LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (users u) LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (users AS u) LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, ( users u ) LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, (ds_1_t, users) LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t JOIN ((users)) u ON true LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t CROSS JOIN ((users)) LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t JOIN ( ( users ) ) u ON true LIMIT 1',
+        'SELECT hashed_password FROM ds_1_t, ((users) u) LIMIT 1',
+        'SELECT hashed_password FROM ((users)) LIMIT 1',
+    )
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE users (id INTEGER, hashed_password TEXT)")
+    con.execute("INSERT INTO users VALUES (1, 'SECRET_HASH')")
+    con.execute("CREATE TABLE ds_1_t (id INTEGER, a TEXT)")
+    con.execute("INSERT INTO ds_1_t VALUES (1, 'ok')")
+    for sql in bypasses:
+        rows = list(con.execute(sql))
+        assert rows == [("SECRET_HASH",)], sql
         with pytest.raises(ValueError, match="Table is not allowed|Query must reference"):
             validate_sql(sql, policy=policy)
 
