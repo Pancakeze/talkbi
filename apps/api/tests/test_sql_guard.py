@@ -621,6 +621,65 @@ def test_validate_sql_rejects_nested_limit_that_leaves_outer_unbounded():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_quoted_limit_that_leaves_outer_unbounded():
+    """
+    LIMIT/FETCH inside string literals or quoted aliases must not satisfy the
+    required row bound. SQLite still executes the unbounded query, and chat
+    materializes every returned row (Excel sheets up to MAX_ROWS_PER_SHEET).
+
+    The fake bound parses because _AFTER_LIMIT_OK_RE allows a following ')'
+    (subquery closer), which also appears at the end of 'LIMIT 1)'.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    # Real LIMIT after a literal that happens to contain the word still valid.
+    validate_sql(
+        "SELECT a FROM ds_1_t WHERE a = 'LIMIT 10' LIMIT 1",
+        policy=policy,
+    )
+    validate_sql(
+        "SELECT 'hello' AS x FROM ds_1_t LIMIT 10",
+        policy=policy,
+    )
+
+    bypasses = (
+        "SELECT 'LIMIT 1)' FROM ds_1_t",
+        "SELECT 'LIMIT 1)' AS x, * FROM ds_1_t",
+        "SELECT * FROM ds_1_t WHERE 'LIMIT 1)'='LIMIT 1)'",
+        'SELECT * FROM ds_1_t AS "LIMIT 1)"',
+        "SELECT * FROM ds_1_t AS `LIMIT 1)`",
+        "SELECT * FROM ds_1_t WHERE a LIKE '%LIMIT 1)%'",
+        "SELECT 'FETCH FIRST 1 ROW ONLY' FROM ds_1_t",
+        "SELECT * FROM ds_1_t WHERE 'FETCH FIRST 1 ROW ONLY'='FETCH FIRST 1 ROW ONLY'",
+        "SELECT $$LIMIT 1)$$ FROM ds_1_t",
+        "SELECT $t$LIMIT 1)$t$ FROM ds_1_t",
+        "SELECT * FROM ds_1_t WHERE a = 'it''s LIMIT 1)'",
+    )
+    # These execute in SQLite and return every ds_1_t row (no real LIMIT).
+    sqlite_full_scans = {
+        "SELECT 'LIMIT 1)' FROM ds_1_t",
+        "SELECT 'LIMIT 1)' AS x, * FROM ds_1_t",
+        "SELECT * FROM ds_1_t WHERE 'LIMIT 1)'='LIMIT 1)'",
+        'SELECT * FROM ds_1_t AS "LIMIT 1)"',
+        "SELECT * FROM ds_1_t AS `LIMIT 1)`",
+        "SELECT 'FETCH FIRST 1 ROW ONLY' FROM ds_1_t",
+        "SELECT * FROM ds_1_t WHERE 'FETCH FIRST 1 ROW ONLY'='FETCH FIRST 1 ROW ONLY'",
+    }
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE ds_1_t (id INTEGER, a TEXT)")
+    con.executemany("INSERT INTO ds_1_t VALUES (?, ?)", [(i, "row") for i in range(50)])
+    for sql in bypasses:
+        if sql in sqlite_full_scans:
+            rows = list(con.execute(sql))
+            assert len(rows) == 50, sql
+        with pytest.raises(ValueError, match="LIMIT"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),

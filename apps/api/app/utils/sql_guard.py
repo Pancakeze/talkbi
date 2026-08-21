@@ -519,6 +519,54 @@ def _extract_tables(sql_text: str) -> set[str]:
     return tables
 
 
+_DOLLAR_QUOTE_OPEN_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
+def _quoted_mask(sql_text: str) -> list[bool]:
+    """
+    True at indexes inside string literals, quoted identifiers, or dollar quotes.
+
+    LIMIT/FETCH inside those spans are data, not row bounds. Treating
+    SELECT 'LIMIT 1)' FROM t as a real LIMIT 1 lets unbounded chat SQL pass.
+    """
+    mask = [False] * len(sql_text)
+    idx = 0
+    n = len(sql_text)
+    while idx < n:
+        opener = _DOLLAR_QUOTE_OPEN_RE.match(sql_text, idx)
+        if opener:
+            closer = opener.group(0)
+            start = opener.end()
+            end = sql_text.find(closer, start)
+            if end == -1:
+                for i in range(idx, n):
+                    mask[i] = True
+                break
+            for i in range(idx, end + len(closer)):
+                mask[i] = True
+            idx = end + len(closer)
+            continue
+        ch = sql_text[idx]
+        if ch in ("'", '"', "`"):
+            quote = ch
+            mask[idx] = True
+            idx += 1
+            while idx < n:
+                mask[idx] = True
+                if sql_text[idx] == quote:
+                    # SQL-standard doubled quote stays inside the literal.
+                    if idx + 1 < n and sql_text[idx + 1] == quote:
+                        mask[idx + 1] = True
+                        idx += 2
+                        continue
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        idx += 1
+    return mask
+
+
 def _paren_depth_at_positions(sql_text: str) -> list[int]:
     """
     Return the parenthesis nesting depth at each character index.
@@ -579,9 +627,12 @@ def _extract_limits(sql_text: str, *, top_level_only: bool = False) -> list[int]
     When top_level_only is set, nested subquery LIMITs are ignored so they
     cannot satisfy the required outer row bound.
     """
+    quoted = _quoted_mask(sql_text)
     depths = _paren_depth_at_positions(sql_text) if top_level_only else None
     values: list[int] = []
     for match in _LIMIT_KEYWORD_RE.finditer(sql_text):
+        if quoted[match.start()]:
+            continue
         if depths is not None and depths[match.start()] != 0:
             continue
         values.append(_parse_limit_at(sql_text, match.end()))
@@ -598,9 +649,12 @@ def _extract_fetches(sql_text: str, *, top_level_only: bool = False) -> list[int
     When top_level_only is set, nested FETCH clauses are ignored so they cannot
     satisfy the required outer row bound.
     """
+    quoted = _quoted_mask(sql_text)
     depths = _paren_depth_at_positions(sql_text) if top_level_only else None
     values: list[int] = []
     for match in _FETCH_KEYWORD_RE.finditer(sql_text):
+        if quoted[match.start()]:
+            continue
         if depths is not None and depths[match.start()] != 0:
             continue
         values.append(_parse_fetch_at(sql_text, match.end()))
