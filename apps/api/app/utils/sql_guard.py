@@ -522,12 +522,23 @@ def _extract_tables(sql_text: str) -> set[str]:
 _DOLLAR_QUOTE_OPEN_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 
 
+def _is_escape_string_prefix(sql_text: str, quote_idx: int) -> bool:
+    """PostgreSQL E'...' / e'...' strings treat backslash as an escape."""
+    if quote_idx < 1 or sql_text[quote_idx - 1] not in ("e", "E"):
+        return False
+    before = sql_text[quote_idx - 2] if quote_idx >= 2 else " "
+    return not (before.isalnum() or before == "_")
+
+
 def _quoted_mask(sql_text: str) -> list[bool]:
     """
     True at indexes inside string literals, quoted identifiers, or dollar quotes.
 
     LIMIT/FETCH inside those spans are data, not row bounds. Treating
     SELECT 'LIMIT 1)' FROM t as a real LIMIT 1 lets unbounded chat SQL pass.
+
+    Also covers SQLite/SQL Server [bracket] identifiers and PostgreSQL E-strings,
+    where \\' does not end the literal (unlike SQL-standard quotes).
     """
     mask = [False] * len(sql_text)
     idx = 0
@@ -547,12 +558,28 @@ def _quoted_mask(sql_text: str) -> list[bool]:
             idx = end + len(closer)
             continue
         ch = sql_text[idx]
-        if ch in ("'", '"', "`"):
-            quote = ch
+        if ch == "[":
+            # SQLite / SQL Server identifiers: [LIMIT 1)] is an alias, not LIMIT.
             mask[idx] = True
             idx += 1
             while idx < n:
                 mask[idx] = True
+                if sql_text[idx] == "]":
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            escape_backslash = ch == "'" and _is_escape_string_prefix(sql_text, idx)
+            mask[idx] = True
+            idx += 1
+            while idx < n:
+                mask[idx] = True
+                if escape_backslash and sql_text[idx] == "\\" and idx + 1 < n:
+                    mask[idx + 1] = True
+                    idx += 2
+                    continue
                 if sql_text[idx] == quote:
                     # SQL-standard doubled quote stays inside the literal.
                     if idx + 1 < n and sql_text[idx + 1] == quote:
