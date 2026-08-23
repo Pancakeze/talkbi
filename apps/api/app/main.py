@@ -24,6 +24,7 @@ def _ensure_sqlite_schema() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_production_safety()
     _ensure_sqlite_schema()
     with SessionLocal() as db:
         seed_data(db)
