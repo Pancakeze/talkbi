@@ -726,6 +726,65 @@ def test_validate_sql_rejects_bracket_and_estring_limit_that_leaves_outer_unboun
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_quoted_paren_that_promotes_nested_limit():
+    """
+    _paren_depth_at_positions used to ignore bracket aliases, E-strings, and
+    dollar quotes. A ')' inside those spans closed the subquery early, so a
+    nested LIMIT looked top-level while SQLite still returned every outer row.
+
+    Concrete (sqlite3 returns every ds_1_t row; validate_sql ALLOWED before fix):
+    SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t AS [x)] LIMIT 1) x
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    # Real top-level LIMIT after a bracket alias / quoted ')' still valid.
+    validate_sql("SELECT a FROM ds_1_t AS [alias] LIMIT 1", policy=policy)
+    validate_sql(
+        "SELECT a FROM ds_1_t WHERE a = ''' ) ''' LIMIT 1",
+        policy=policy,
+    )
+    validate_sql(
+        "SELECT a FROM (SELECT a FROM ds_1_t LIMIT 1) x LIMIT 10",
+        policy=policy,
+    )
+
+    sqlite_full_scans = (
+        "SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t AS [x)] LIMIT 1) x",
+        "SELECT * FROM ds_1_t, (SELECT 1 AS [x)] FROM ds_1_t LIMIT 1) x",
+        "SELECT * FROM ds_1_t WHERE EXISTS (SELECT 1 FROM ds_1_t AS [x)] LIMIT 1)",
+        "SELECT * FROM ds_1_t CROSS JOIN (SELECT 1 FROM ds_1_t AS [x)] LIMIT 1) x",
+        "SELECT * FROM ds_1_t UNION ALL SELECT * FROM (SELECT * FROM ds_1_t AS [x)] LIMIT 1)",
+        "SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t AS [LIMIT 1)] LIMIT 1) x",
+    )
+    # PostgreSQL-only quote styles: same depth bug, engines that accept them
+    # also treat the LIMIT as nested (outer result unbounded).
+    other_quote_bypasses = (
+        r"SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t WHERE a = E'x\' ) ' LIMIT 1) x",
+        r"SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t WHERE 1=1 OR a = e'x\' ) ' LIMIT 1) x",
+        "SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t WHERE a = $$x)$$ LIMIT 1) x",
+        "SELECT * FROM ds_1_t, (SELECT 1 FROM ds_1_t WHERE a = $t$x)$t$ LIMIT 1) x",
+        (
+            "SELECT * FROM ds_1_t WHERE id IN "
+            "(SELECT id FROM ds_1_t WHERE a = $$x)$$ FETCH FIRST 1 ROW ONLY)"
+        ),
+    )
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE ds_1_t (id INTEGER, a TEXT)")
+    con.executemany("INSERT INTO ds_1_t VALUES (?, ?)", [(i, "row") for i in range(50)])
+    for sql in sqlite_full_scans:
+        rows = list(con.execute(sql))
+        assert len(rows) >= 50, sql
+        with pytest.raises(ValueError, match="LIMIT"):
+            validate_sql(sql, policy=policy)
+    for sql in other_quote_bypasses:
+        with pytest.raises(ValueError, match="LIMIT|FETCH"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),

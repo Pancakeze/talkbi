@@ -598,25 +598,20 @@ def _paren_depth_at_positions(sql_text: str) -> list[int]:
     """
     Return the parenthesis nesting depth at each character index.
 
-    Depth ignores quoted spans so identifiers/literals containing '(' do not
-    skew top-level LIMIT/FETCH detection.
+    Depth uses the same quote mask as LIMIT/FETCH extraction so a ')' inside
+    a bracket alias, E-string, or dollar-quote cannot close a subquery early
+    and make a nested LIMIT look top-level.
     """
+    quoted = _quoted_mask(sql_text)
     depths = [0] * len(sql_text)
     depth = 0
-    quote: str | None = None
     for idx, ch in enumerate(sql_text):
         depths[idx] = depth
-        if quote:
-            if ch == quote:
-                quote = None
-            continue
-        if ch in ('"', "'", "`"):
-            quote = ch
+        if quoted[idx]:
             continue
         if ch == "(":
             depth += 1
-            continue
-        if ch == ")":
+        elif ch == ")":
             depth = max(depth - 1, 0)
     return depths
 
