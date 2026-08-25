@@ -155,7 +155,10 @@ _LIMIT_KEYWORD_RE = re.compile(r"\blimit\b", re.IGNORECASE)
 # PostgreSQL SQL-standard row bound: FETCH { FIRST | NEXT } [ count ] { ROW | ROWS } ...
 # Equivalent to LIMIT and must be enforced the same way (including nested LIMITs).
 _FETCH_KEYWORD_RE = re.compile(r"\bfetch\s+(?:first|next)\b", re.IGNORECASE)
-_FETCH_ROW_TAIL_RE = re.compile(r"^rows?\s+(?:only|with\s+ties)\b", re.IGNORECASE)
+# ONLY is a hard cap. WITH TIES is not: PostgreSQL returns every row that ties
+# with the last included ORDER BY key, which can be the entire staging table.
+_FETCH_ROW_TAIL_RE = re.compile(r"^rows?\s+only\b", re.IGNORECASE)
+_FETCH_WITH_TIES_RE = re.compile(r"^rows?\s+with\s+ties\b", re.IGNORECASE)
 # After a literal LIMIT n, only clause boundaries / subquery closers are valid.
 # Reject expressions such as LIMIT 1+999999 or LIMIT 200*200 that bypass max_limit.
 # Do NOT allow a bare comma here: SQLite/MySQL `LIMIT offset, count` would otherwise
@@ -632,9 +635,13 @@ def _parse_fetch_at(sql_text: str, match_end: int) -> int:
     literal = re.match(r"(\d+)\s+", rest)
     if literal:
         after = rest[literal.end() :].lstrip()
+        if _FETCH_WITH_TIES_RE.match(after):
+            raise ValueError("FETCH WITH TIES is not allowed.")
         if not _FETCH_ROW_TAIL_RE.match(after):
             raise ValueError("FETCH row count must be a literal integer.")
         return int(literal.group(1))
+    if _FETCH_WITH_TIES_RE.match(rest):
+        raise ValueError("FETCH WITH TIES is not allowed.")
     if _FETCH_ROW_TAIL_RE.match(rest):
         # FETCH FIRST ROW ONLY / FETCH NEXT ROWS ONLY → count defaults to 1
         return 1
@@ -667,6 +674,7 @@ def _extract_fetches(sql_text: str, *, top_level_only: bool = False) -> list[int
 
     Bare omitted counts default to 1. Expressions such as FETCH FIRST (100*100)
     must be rejected so they cannot bypass max_limit while still executing.
+    FETCH ... WITH TIES is rejected: it is not a hard row cap.
 
     When top_level_only is set, nested FETCH clauses are ignored so they cannot
     satisfy the required outer row bound.

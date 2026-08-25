@@ -571,6 +571,44 @@ def test_validate_sql_rejects_fetch_first_that_bypasses_max_limit():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_fetch_with_ties_that_leaves_result_unbounded():
+    """
+    PostgreSQL FETCH ... WITH TIES is not a hard cap: every row that ties with
+    the last included ORDER BY key is returned. On a duplicate/constant key,
+    FETCH FIRST 1 ROW WITH TIES returns the whole staging sheet while the guard
+    treated count=1 as within max_limit.
+
+    Concrete (psycopg on PostgreSQL 16, 300-row ds_1_t with a='row' for every
+    row; validate_sql ALLOWED before fix; engine returned 300 rows):
+    SELECT * FROM ds_1_t ORDER BY a FETCH FIRST 1 ROW WITH TIES
+    Also ORDER BY (SELECT 0), omitted count, FETCH NEXT, and count=200 WITH TIES.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    # Hard-cap FETCH ... ONLY remains valid.
+    validate_sql("SELECT a FROM ds_1_t FETCH FIRST 1 ROW ONLY", policy=policy)
+    validate_sql(
+        "SELECT a FROM ds_1_t ORDER BY a FETCH FIRST 200 ROWS ONLY",
+        policy=policy,
+    )
+
+    bypasses = (
+        "SELECT * FROM ds_1_t ORDER BY a FETCH FIRST 1 ROW WITH TIES",
+        "SELECT * FROM ds_1_t ORDER BY a FETCH FIRST 1 ROWS WITH TIES",
+        "SELECT * FROM ds_1_t ORDER BY a FETCH FIRST ROW WITH TIES",
+        "SELECT * FROM ds_1_t ORDER BY a FETCH NEXT 1 ROW WITH TIES",
+        "SELECT * FROM ds_1_t ORDER BY a FETCH FIRST 200 ROWS WITH TIES",
+        "SELECT * FROM ds_1_t ORDER BY (SELECT 0) FETCH FIRST 1 ROW WITH TIES",
+        'SELECT * FROM "staging"."ds_1_t" ORDER BY a FETCH FIRST 1 ROW WITH TIES',
+    )
+    for sql in bypasses:
+        with pytest.raises(ValueError, match="WITH TIES"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_nested_limit_that_leaves_outer_unbounded():
     """
     A subquery LIMIT must not satisfy the required row bound: chat materializes
