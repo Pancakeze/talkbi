@@ -823,6 +823,54 @@ def test_validate_sql_rejects_quoted_paren_that_promotes_nested_limit():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_unicode_dollar_quote_limit_that_leaves_outer_unbounded():
+    """
+    Residual of the quoted LIMIT/FETCH bypass: dollar-quote masking only
+    recognized ASCII tags ($tag$ / $$). PostgreSQL's lexer also accepts
+    UTF-8 identifier bytes in the tag (scan.l dolq_start/dolq_cont), so
+    $字$ ... $字$ is a real string literal.
+
+    Concrete (psycopg on PostgreSQL 16, 300-row ds_1_t; validate_sql
+    ALLOWED before fix; engine returned 300 rows):
+    SELECT $字$ LIMIT 1)$字$ FROM ds_1_t
+    SELECT $字$FETCH FIRST 1 ROW ONLY$字$ FROM ds_1_t
+    The fake bound parses because _AFTER_LIMIT_OK_RE allows a following ')'
+    and FETCH ... ONLY is a prefix match, while PostgreSQL never sees a
+    row-bound keyword — it is inside the dollar-quoted string.
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    # Real LIMIT/FETCH after a unicode dollar-quoted literal still valid.
+    validate_sql("SELECT $字$hello$字$ AS x FROM ds_1_t LIMIT 1", policy=policy)
+    validate_sql(
+        "SELECT a FROM ds_1_t WHERE a = $é$x$é$ FETCH FIRST 1 ROW ONLY",
+        policy=policy,
+    )
+    # ASCII tags must keep being treated as quotes (already covered, lock in).
+    with pytest.raises(ValueError, match="LIMIT"):
+        validate_sql("SELECT $x$ LIMIT 1)$x$ FROM ds_1_t", policy=policy)
+
+    bypasses = (
+        "SELECT $字$ LIMIT 1)$字$ FROM ds_1_t",
+        "SELECT $字$LIMIT 1)$字$ FROM ds_1_t",
+        "SELECT $字$FETCH FIRST 1 ROW ONLY$字$ FROM ds_1_t",
+        "SELECT $字$ FETCH FIRST 1 ROW ONLY $字$ FROM ds_1_t",
+        "SELECT $字$ LIMIT 1 OFFSET 0$字$ FROM ds_1_t",
+        "SELECT $é$ LIMIT 1)$é$ FROM ds_1_t",
+        "SELECT $λ$ LIMIT 1)$λ$ FROM ds_1_t",
+        "SELECT $ÿ$ LIMIT 1)$ÿ$ FROM ds_1_t",
+        "SELECT $А$ LIMIT 1)$А$ FROM ds_1_t",
+        "SELECT $µ$ LIMIT 1)$µ$ FROM ds_1_t",
+        'SELECT $字$ LIMIT 1)$字$ FROM "staging"."ds_1_t"',
+    )
+    for sql in bypasses:
+        with pytest.raises(ValueError, match="LIMIT|FETCH"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_admin_dos_and_tablefunc_helpers():
     policy = SQLGuardPolicy(
         allowed_schemas=("staging",),

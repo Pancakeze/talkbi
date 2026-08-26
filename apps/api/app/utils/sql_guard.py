@@ -522,7 +522,16 @@ def _extract_tables(sql_text: str) -> set[str]:
     return tables
 
 
-_DOLLAR_QUOTE_OPEN_RE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+# PostgreSQL scan.l dollar-quote delimiter:
+#   dolq_start  [A-Za-z\200-\377_]
+#   dolq_cont   [A-Za-z\200-\377_0-9]
+#   dolqdelim   \$({dolq_start}{dolq_cont}*)?\$
+# High bytes are UTF-8 of non-ASCII identifier characters (e.g. $字$).
+# ASCII-only tags left $字$ LIMIT 1)$字$ unmasked, so a fake LIMIT/FETCH
+# satisfied the row-bound check while PostgreSQL treated it as a string.
+_DOLLAR_QUOTE_OPEN_RE = re.compile(
+    r"\$(?:[A-Za-z_\u0080-\U0010FFFF][A-Za-z0-9_\u0080-\U0010FFFF]*)?\$"
+)
 
 
 def _is_escape_string_prefix(sql_text: str, quote_idx: int) -> bool:
