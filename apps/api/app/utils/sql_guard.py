@@ -282,20 +282,20 @@ def _keyword_at(sql_text: str, idx: int, keyword: str) -> bool:
 
 
 def _find_from_clause_end(sql_text: str, start: int) -> int:
+    """
+    End of a FROM-list: next top-level clause keyword, or a closing ')' for a
+    subquery. Must use the same quote mask as LIMIT/FETCH extraction so a
+    SQLite/SQL Server [WHERE]/[LIMIT] alias cannot look like a clause boundary
+    and hide later comma-joined relations from the allowlist.
+    """
+    quoted = _quoted_mask(sql_text)
     depth = 0
-    quote: str | None = None
     idx = start
     while idx < len(sql_text):
+        if quoted[idx]:
+            idx += 1
+            continue
         ch = sql_text[idx]
-        if quote:
-            if ch == quote:
-                quote = None
-            idx += 1
-            continue
-        if ch in ('"', "'", "`"):
-            quote = ch
-            idx += 1
-            continue
         if ch == "(":
             depth += 1
             idx += 1

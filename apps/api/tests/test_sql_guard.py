@@ -211,6 +211,64 @@ def test_validate_sql_rejects_parenthesized_relation_allowlist_bypass():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_bracket_alias_from_end_allowlist_bypass():
+    """
+    Residual of the parenthesized-relation allowlist bypass: FROM-clause
+    scanning treated WHERE/LIMIT/ORDER/... as boundaries even inside SQLite
+    [bracket] identifiers. A [WHERE] alias truncated the FROM list, so
+    comma-joined users was never allowlisted while sqlite still returned
+    users.hashed_password.
+
+    Concrete (sqlite3 returns SECRET_HASH; validate_sql ALLOWED before fix):
+    SELECT hashed_password FROM ds_1_t [WHERE], users LIMIT 1
+    Same for [LIMIT]/[ORDER]/[GROUP]/[UNION]/... and AS [WHERE].
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"ds_1_t"}),
+    )
+    validate_sql("SELECT a FROM ds_1_t AS [alias] LIMIT 1", policy=policy)
+    validate_sql("SELECT a FROM ds_1_t [alias] LIMIT 1", policy=policy)
+    validate_sql(
+        'SELECT a FROM ds_1_t AS "WHERE" LIMIT 1',
+        policy=policy,
+    )
+
+    bypasses = (
+        "SELECT hashed_password FROM ds_1_t [WHERE], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [where], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [WHERE] , users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t AS [WHERE], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [LIMIT], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [ORDER], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [GROUP], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [HAVING], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [OFFSET], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [UNION], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [FETCH], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [WINDOW], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [EXCEPT], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [INTERSECT], users LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [WHERE], (users) LIMIT 1",
+        "SELECT hashed_password FROM ds_1_t [WHERE], ((users)) LIMIT 1",
+        'SELECT hashed_password FROM "ds_1_t" [WHERE], users LIMIT 1',
+        "SELECT users.hashed_password FROM ds_1_t [WHERE], users LIMIT 1",
+        "SELECT * FROM ds_1_t [WHERE], users LIMIT 1",
+    )
+
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE users (id INTEGER, hashed_password TEXT)")
+    con.execute("INSERT INTO users VALUES (1, 'SECRET_HASH')")
+    con.execute("CREATE TABLE ds_1_t (id INTEGER, a TEXT)")
+    con.execute("INSERT INTO ds_1_t VALUES (1, 'ok')")
+    for sql in bypasses:
+        rows = list(con.execute(sql))
+        assert any("SECRET_HASH" in str(r) for r in rows), sql
+        with pytest.raises(ValueError, match="Table is not allowed"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_nested_parenthesized_relation_allowlist_bypass():
     """
     SQLite's table-or-subquery grammar is recursive: ((users)), (users u),
