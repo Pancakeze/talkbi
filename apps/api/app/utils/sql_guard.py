@@ -173,8 +173,10 @@ _JOIN_RE = re.compile(
 )
 # PostgreSQL TABLE shorthand: (TABLE users) / TABLE ONLY public.users
 # can reference relations without a normal FROM/JOIN identifier token.
+# Whitespace after TABLE is optional: PostgreSQL tokenizes TABLE"users"
+# the same as TABLE "users", and requiring \\s+ missed the quoted form.
 _TABLE_SHORTHAND_RE = re.compile(
-    r"\btable\b\s+(?:only\s+)?([^\s,;)]+)",
+    r"\btable\b\s*(?:only\s+)?([^\s,;)]+)",
     re.IGNORECASE,
 )
 # One relation identifier, optionally schema-qualified, with optional quoting /

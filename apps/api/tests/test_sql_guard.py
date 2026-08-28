@@ -175,6 +175,55 @@ def test_validate_sql_rejects_table_shorthand_allowlist_bypass():
             validate_sql(sql, policy=policy)
 
 
+def test_validate_sql_rejects_unspaced_table_shorthand_cte_allowlist_bypass():
+    """
+    Residual of the TABLE-shorthand allowlist bypass: the scanner required
+    whitespace after TABLE, but PostgreSQL does not. TABLE"users" tokenizes
+    as TABLE + "users" (scan.l: whitespace is optional between a keyword and
+    a quoted identifier).
+
+    A CTE whose quoted name normalizes to the staging allowlist identifier
+    then shadows the real sheet:
+
+      WITH "staging.ds_1_t" AS (TABLE"users")
+      SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1
+
+    Concrete (psycopg on PostgreSQL 16; validate_sql ALLOWED before fix;
+    engine returned SECRET_HASH from public.users):
+    WITH "staging.ds_1_t" AS (TABLE"users") SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1
+    Same for table"users", TABLE"public"."users", and TABLE"pg_catalog"."pg_authid".
+    """
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_schemas=("staging",),
+        allowed_tables=frozenset({"staging.ds_1_t"}),
+    )
+    # Spaced TABLE shorthand in a FROM item remains rejected (already covered).
+    with pytest.raises(ValueError, match="Table is not allowed"):
+        validate_sql(
+            'SELECT * FROM "staging"."ds_1_t", (TABLE "users") u LIMIT 1',
+            policy=policy,
+        )
+
+    bypasses = (
+        'WITH "staging.ds_1_t" AS (TABLE"users") '
+        'SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1',
+        'WITH "staging.ds_1_t" AS (table"users") '
+        'SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1',
+        'WITH "staging.ds_1_t" AS (TABLE"public"."users") '
+        'SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1',
+        'WITH "staging.ds_1_t" AS (TABLE"public" . "users") '
+        'SELECT hashed_password FROM "staging.ds_1_t" LIMIT 1',
+        'WITH "staging.ds_1_t" AS (TABLE"pg_catalog"."pg_authid") '
+        'SELECT * FROM "staging.ds_1_t" LIMIT 1',
+        'WITH "staging.ds_1_t" AS (TABLE"pg_shadow") '
+        'SELECT * FROM "staging.ds_1_t" LIMIT 1',
+    )
+    for sql in bypasses:
+        with pytest.raises(ValueError, match="Table is not allowed"):
+            validate_sql(sql, policy=policy)
+
+
 def test_validate_sql_rejects_parenthesized_relation_allowlist_bypass():
     """
     SQLite accepts FROM/JOIN (users) as a real table reference. The guard used to
