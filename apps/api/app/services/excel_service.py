@@ -20,14 +20,28 @@ def _sanitize_token(raw: str, fallback: str = "col") -> str:
 
 
 def _sanitize_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Assign unique physical column names.
+
+    Deduping only per sanitized base is not enough: a later column that
+    sanitizes to `foo` becomes `foo_1`, which collides with an existing
+    header already named `foo_1` (or `foo!` / `foo ` after sanitize).
+    pandas then has duplicate labels and SQLAlchemy to_sql raises
+    DuplicateColumnError, so Excel upload 500s and the DataSource stays
+    stuck in status=staging.
+    """
     out = df.copy()
-    seen: dict[str, int] = {}
+    occupied: set[str] = set()
     new_cols: list[str] = []
     for col in out.columns:
         base = _sanitize_token(str(col), "col")
-        n = seen.get(base, 0)
-        name = base if n == 0 else f"{base}_{n}"
-        seen[base] = n + 1
+        name = base
+        if name in occupied:
+            i = 1
+            while f"{base}_{i}" in occupied:
+                i += 1
+            name = f"{base}_{i}"
+        occupied.add(name)
         new_cols.append(name)
     out.columns = new_cols
     return out

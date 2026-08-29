@@ -9,6 +9,7 @@ from app.api.routes import data_sources as data_sources_routes
 from app.db.session import SessionLocal, engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.services.chat_service import run_chat_query
+from app.services.excel_service import _sanitize_dataframe_columns, materialize_excel_staging
 
 
 def _xlsx_bytes() -> bytes:
@@ -246,6 +247,68 @@ def test_chat_ignores_persisted_forged_staging_metadata(client: TestClient):
 
     assert exc.value.status_code == 422
     assert exc.value.detail == "Unable to query the selected themes."
+
+
+def test_sanitize_dataframe_columns_avoids_suffix_collisions():
+    """
+    Concrete upload crash: headers foo / foo_1 / foo! all need distinct
+    physical names. The old per-base counter mapped the third column to
+    foo_1 as well, so to_sql raised DuplicateColumnError.
+    """
+    df = pd.DataFrame({"foo": [1], "foo_1": [2], "foo!": [3]})
+    out = _sanitize_dataframe_columns(df)
+    assert list(out.columns) == ["foo", "foo_1", "foo_2"]
+    assert not out.columns.duplicated().any()
+    assert out["foo"].tolist() == [1]
+    assert out["foo_1"].tolist() == [2]
+    assert out["foo_2"].tolist() == [3]
+
+    # Trailing-space / punctuation variants that Excel exports often produce.
+    df2 = pd.DataFrame({"Revenue": [10], "Revenue_1": [20], "Revenue ": [30]})
+    out2 = _sanitize_dataframe_columns(df2)
+    assert list(out2.columns) == ["revenue", "revenue_1", "revenue_2"]
+    assert not out2.columns.duplicated().any()
+
+
+def test_excel_upload_survives_sanitized_column_name_collision(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    buf = io.BytesIO()
+    pd.DataFrame({"foo": [1], "foo_1": [2], "foo!": [3]}).to_excel(
+        buf, sheet_name="Sheet1", index=False, engine="openpyxl"
+    )
+    files = {
+        "file": (
+            "cols.xlsx",
+            buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    r = client.post("/api/data-sources/excel/upload", files=files, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "active"
+    names = [c["name"] for c in body["connection_info"]["staging"]["tables"][0]["columns"]]
+    assert names == ["foo", "foo_1", "foo_2"]
+    assert len(set(names)) == 3
+
+
+def test_materialize_excel_keeps_colliding_column_values():
+    buf = io.BytesIO()
+    pd.DataFrame({"foo": [1], "foo_1": [2], "foo!": [3]}).to_excel(
+        buf, sheet_name="Sheet1", index=False, engine="openpyxl"
+    )
+    info = materialize_excel_staging(engine, 99, buf.getvalue(), "cols.xlsx")
+    table = info["staging"]["tables"][0]
+    assert [c["name"] for c in table["columns"]] == ["foo", "foo_1", "foo_2"]
+    from sqlalchemy import text
+
+    qualified = table["qualified"]
+    with engine.connect() as conn:
+        row = conn.execute(text(f"SELECT foo, foo_1, foo_2 FROM {qualified}")).mappings().one()
+    assert dict(row) == {"foo": 1, "foo_1": 2, "foo_2": 3}
 
 
 def test_excel_upload_rejects_bad_extension(client: TestClient):
