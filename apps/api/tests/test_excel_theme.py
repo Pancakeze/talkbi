@@ -9,7 +9,11 @@ from app.api.routes import data_sources as data_sources_routes
 from app.db.session import SessionLocal, engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.services.chat_service import run_chat_query
-from app.services.excel_service import _sanitize_dataframe_columns, materialize_excel_staging
+from app.services.excel_service import (
+    MAX_SQL_IDENT_LEN,
+    _sanitize_dataframe_columns,
+    materialize_excel_staging,
+)
 
 
 def _xlsx_bytes() -> bytes:
@@ -309,6 +313,104 @@ def test_materialize_excel_keeps_colliding_column_values():
     with engine.connect() as conn:
         row = conn.execute(text(f"SELECT foo, foo_1, foo_2 FROM {qualified}")).mappings().one()
     assert dict(row) == {"foo": 1, "foo_1": 2, "foo_2": 3}
+
+
+def test_sanitize_dataframe_columns_fits_postgres_identifier_limit():
+    """
+    Residual of the suffix-collision fix: occupied-set uniquing produced
+    `aaa…aaa` (63) and `aaa…aaa_1` (65). PostgreSQL NAMEDATALEN-1 truncates
+    the second name back to 63, so CREATE TABLE raises DuplicateColumn.
+    Live PG16 + psycopg: two headers of 63 and 64 A's → upload 500 and
+    DataSource stuck status=staging (ValueError handler does not catch it).
+    """
+    long_a = "A" * MAX_SQL_IDENT_LEN
+    long_b = "A" * (MAX_SQL_IDENT_LEN + 1)
+    df = pd.DataFrame({long_a: [1], long_b: [2], "short": [3]})
+    out = _sanitize_dataframe_columns(df)
+    names = list(out.columns)
+    assert len(names) == 3
+    assert len(set(names)) == 3
+    assert all(len(n) <= MAX_SQL_IDENT_LEN for n in names)
+    # Simulated PG truncation must not reintroduce duplicates.
+    truncated = [n[:MAX_SQL_IDENT_LEN] for n in names]
+    assert len(set(truncated)) == 3
+    assert out[names[0]].tolist() == [1]
+    assert out[names[1]].tolist() == [2]
+    assert out["short"].tolist() == [3]
+
+
+def test_materialize_long_csv_filename_fits_postgres_identifier_limit():
+    """
+    CSV staging tables are ds_{id}_{sanitized_stem}. A descriptive export
+    name makes that identifier exceed 63 characters; SQLAlchemy's PG dialect
+    then raises IdentifierError (not ValueError) and upload 500s.
+    """
+    stem = "customer_transaction_history_export_north_america_q1_2024_final"
+    filename = f"{stem}.csv"
+    raw = b"district_name,amount\nA,1\nB,2\n"
+    info = materialize_excel_staging(engine, 1, raw, filename)
+    table = info["staging"]["tables"][0]
+    assert len(table["table"]) <= MAX_SQL_IDENT_LEN
+    assert table["table"].startswith("ds_1_")
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"SELECT district_name, amount FROM {table['qualified']}")).mappings().all()
+    assert [dict(r) for r in rows] == [
+        {"district_name": "A", "amount": 1},
+        {"district_name": "B", "amount": 2},
+    ]
+
+
+def test_excel_upload_survives_postgres_length_column_collision(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    buf = io.BytesIO()
+    pd.DataFrame({"A" * 63: [1], "A" * 64: [2]}).to_excel(
+        buf, sheet_name="Sheet1", index=False, engine="openpyxl"
+    )
+    files = {
+        "file": (
+            "longcols.xlsx",
+            buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    r = client.post("/api/data-sources/excel/upload", files=files, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "active"
+    names = [c["name"] for c in body["connection_info"]["staging"]["tables"][0]["columns"]]
+    assert len(names) == 2
+    assert len(set(names)) == 2
+    assert all(len(n) <= MAX_SQL_IDENT_LEN for n in names)
+
+
+def test_excel_upload_marks_failed_when_materialize_raises_non_value_error(
+    client: TestClient, monkeypatch
+):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("duplicate column")
+
+    monkeypatch.setattr(data_sources_routes, "materialize_excel_staging", boom)
+    r = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("t.csv", b"a,b\n1,2\n", "text/csv")},
+        headers=headers,
+    )
+    assert r.status_code == 500, r.text
+    listed = client.get("/api/data-sources", headers=headers)
+    assert listed.status_code == 200
+    uploaded = [row for row in listed.json() if row["name"] == "t.csv"]
+    assert uploaded, listed.text
+    assert uploaded[0]["status"] == "failed"
+    assert uploaded[0]["connection_info"] == {"error": "Failed to materialize upload."}
 
 
 def test_excel_upload_rejects_bad_extension(client: TestClient):

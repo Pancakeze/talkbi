@@ -108,6 +108,18 @@ def upload_excel(
         db.commit()
         db.refresh(item)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except Exception as exc:
+        # pandas/SQLAlchemy failures (BadZipFile, IdentifierError, DuplicateColumn)
+        # used to 500 while leaving the already-committed row status=staging,
+        # and there is no data-source delete endpoint to recover.
+        item.status = "failed"
+        item.connection_info = {"error": "Failed to materialize upload."}
+        db.add(item)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to materialize upload.",
+        ) from exc
 
     item.connection_info = info
     item.status = "active"
