@@ -13,6 +13,13 @@ STAGING_SCHEMA = "staging"
 # dialect or silently truncated by the server, colliding with a sibling
 # identifier (DuplicateColumn / DuplicateTable / IdentifierError).
 MAX_SQL_IDENT_LEN = 63
+# pandas' default NA list includes "NA", "NULL", "N/A", "None", "#N/A".
+# Those are real cell values (ISO 3166-1 Namibia, status codes) and must
+# not become SQL NULL. Only truly empty cells are missing values.
+_PANDAS_READ_KWARGS = {
+    "keep_default_na": False,
+    "na_values": [""],
+}
 
 
 def _sanitize_token(raw: str, fallback: str = "col") -> str:
@@ -78,7 +85,11 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     """
     name = (filename or "upload").lower()
     if name.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(file_bytes), nrows=MAX_ROWS_PER_SHEET)
+        df = pd.read_csv(
+            io.BytesIO(file_bytes),
+            nrows=MAX_ROWS_PER_SHEET,
+            **_PANDAS_READ_KWARGS,
+        )
         df = _sanitize_dataframe_columns(df)
         slug = _sanitize_token(Path(filename or "data").stem, "sheet")
         return {slug: ((filename or "data").rsplit(".", 1)[0], df)}
@@ -88,7 +99,7 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     result: dict[str, tuple[str, pd.DataFrame]] = {}
     for sheet in excel.sheet_names:
         slug = _unique_sql_ident(_sanitize_token(sheet, "sheet"), occupied)
-        df = excel.parse(sheet, nrows=MAX_ROWS_PER_SHEET)
+        df = excel.parse(sheet, nrows=MAX_ROWS_PER_SHEET, **_PANDAS_READ_KWARGS)
         df = _sanitize_dataframe_columns(df)
         result[slug] = (sheet, df)
     return result

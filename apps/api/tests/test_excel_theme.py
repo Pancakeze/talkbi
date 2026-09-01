@@ -362,6 +362,125 @@ def test_materialize_long_csv_filename_fits_postgres_identifier_limit():
     ]
 
 
+def test_materialize_preserves_literal_na_null_strings():
+    """
+    pandas default na_values treat 'NA' / 'NULL' / 'N/A' / 'None' as missing.
+    Namibia's ISO code is NA; status columns often store those literals.
+    They must land as text, not SQL NULL, or GROUP BY / filters drop the rows.
+    """
+    from sqlalchemy import text
+
+    csv_raw = (
+        b"country,status,revenue\n"
+        b"NA,NULL,100\n"
+        b"US,N/A,200\n"
+        b"ZA,None,300\n"
+        b"CN,#N/A,400\n"
+    )
+    info = materialize_excel_staging(engine, 401, csv_raw, "countries.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT country, status, revenue FROM {table['qualified']} ORDER BY revenue")
+            ).mappings()
+        ]
+    assert rows == [
+        {"country": "NA", "status": "NULL", "revenue": 100},
+        {"country": "US", "status": "N/A", "revenue": 200},
+        {"country": "ZA", "status": "None", "revenue": 300},
+        {"country": "CN", "status": "#N/A", "revenue": 400},
+    ]
+
+    buf = io.BytesIO()
+    pd.DataFrame(
+        {
+            "country": ["NA", "US", "ZA"],
+            "status": ["NULL", "N/A", "None"],
+            "revenue": [100, 200, 300],
+        }
+    ).to_excel(buf, sheet_name="Sheet1", index=False, engine="openpyxl")
+    xinfo = materialize_excel_staging(engine, 402, buf.getvalue(), "countries.xlsx")
+    xtable = xinfo["staging"]["tables"][0]
+    with engine.connect() as conn:
+        xrows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT country, status, revenue FROM {xtable['qualified']} ORDER BY revenue")
+            ).mappings()
+        ]
+    assert xrows == [
+        {"country": "NA", "status": "NULL", "revenue": 100},
+        {"country": "US", "status": "N/A", "revenue": 200},
+        {"country": "ZA", "status": "None", "revenue": 300},
+    ]
+
+
+def test_materialize_empty_numeric_cells_remain_null():
+    """Empty amount cells must still become SQL NULL (not the string '') so SUM works."""
+    from sqlalchemy import text
+
+    raw = b"label,amount\nA,1.5\nB,\nC,3\n"
+    info = materialize_excel_staging(engine, 403, raw, "amounts.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT label, amount FROM {table['qualified']} ORDER BY label")
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(amount) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"label": "A", "amount": 1.5},
+        {"label": "B", "amount": None},
+        {"label": "C", "amount": 3.0},
+    ]
+    assert total == 4.5
+
+
+def test_chat_query_preserves_literal_na_country_codes(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = b"country,revenue\nNA,100\nUS,200\nNULL,50\n"
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("na-countries.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "na-country-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("country", "revenue"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    countries = {row["country"] for row in chat.json()["rows"]}
+    assert countries == {"NA", "US", "NULL"}
+    assert None not in countries
+
+
 def test_excel_upload_survives_postgres_length_column_collision(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
