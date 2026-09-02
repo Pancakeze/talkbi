@@ -28,6 +28,34 @@ def test_validate_sql_rejects_select_into_side_effect():
         validate_sql('SELECT * INTO leaked_copy FROM "staging"."ds_1_t" LIMIT 10')
 
 
+def test_validate_sql_allows_forbidden_words_in_quoted_identifiers():
+    """Excel headers like Update/Delete are quoted in generated SQL, not DDL."""
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_tables=frozenset({"ds_1_sheet"}),
+    )
+    validate_sql('SELECT "update", "delete", "grant" FROM "ds_1_sheet" LIMIT 100', policy=policy)
+    validate_sql('SELECT "copy", "replace", "create" FROM "ds_1_sheet" LIMIT 100', policy=policy)
+
+
+def test_validate_sql_allows_forbidden_words_in_string_literals():
+    policy = SQLGuardPolicy(
+        max_limit=200,
+        allowed_tables=frozenset({"ds_1_sheet"}),
+    )
+    validate_sql(
+        "SELECT amount FROM ds_1_sheet WHERE status = 'delete' LIMIT 100",
+        policy=policy,
+    )
+
+
+def test_validate_sql_still_rejects_unquoted_into_and_drop():
+    with pytest.raises(ValueError):
+        validate_sql('SELECT * INTO leaked_copy FROM "staging"."ds_1_t" LIMIT 10')
+    with pytest.raises(ValueError):
+        validate_sql('SELECT a FROM "staging"."ds_1_t" DROP TABLE users LIMIT 1')
+
+
 def test_validate_sql_rejects_comments():
     with pytest.raises(ValueError):
         validate_sql("SELECT 1 -- evil")

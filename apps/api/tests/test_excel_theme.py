@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 from app.api.routes import data_sources as data_sources_routes
 from app.db.session import SessionLocal, engine
@@ -530,6 +531,162 @@ def test_excel_upload_marks_failed_when_materialize_raises_non_value_error(
     assert uploaded, listed.text
     assert uploaded[0]["status"] == "failed"
     assert uploaded[0]["connection_info"] == {"error": "Failed to materialize upload."}
+
+
+def test_materialize_preserves_leading_zero_identifiers():
+    """
+    pandas default inference turns 02101 / 000123 into int64 2101 / 123.
+    Zip codes, bank accounts, and padded employee ids must stay text.
+    """
+    from sqlalchemy import text
+
+    raw = b"zip,account_id,balance\n02101,000123,100.5\n02102,000124,200.0\n"
+    info = materialize_excel_staging(engine, 501, raw, "accounts.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT zip, account_id, balance FROM {table['qualified']} ORDER BY zip")
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(balance) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"zip": "02101", "account_id": "000123", "balance": 100.5},
+        {"zip": "02102", "account_id": "000124", "balance": 200.0},
+    ]
+    assert total == 300.5
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["zip", "account_id", "balance"])
+    for zip_code, account_id, balance in (("02101", "000123", 100.5), ("02102", "000124", 200.0)):
+        ws.append([zip_code, account_id, balance])
+        for col in ("A", "B"):
+            ws[f"{col}{ws.max_row}"].number_format = "@"
+    buf = io.BytesIO()
+    wb.save(buf)
+    xinfo = materialize_excel_staging(engine, 502, buf.getvalue(), "accounts.xlsx")
+    xtable = xinfo["staging"]["tables"][0]
+    with engine.connect() as conn:
+        xrows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT zip, account_id, balance FROM {xtable['qualified']} ORDER BY zip")
+            ).mappings()
+        ]
+    assert xrows == [
+        {"zip": "02101", "account_id": "000123", "balance": 100.5},
+        {"zip": "02102", "account_id": "000124", "balance": 200.0},
+    ]
+
+
+def test_materialize_large_uint64_ids_do_not_crash_upload():
+    """
+    Integers in (2^63, 2^64) become pandas uint64. SQLAlchemy to_sql then
+    raises ValueError: Unsigned 64 bit integer datatype is not supported,
+    so Excel/CSV upload 400s and the file never lands.
+    """
+    from sqlalchemy import text
+
+    raw = b"order_id,amount\n12345678901234567890,10.5\n12345678901234567891,20\n"
+    info = materialize_excel_staging(engine, 503, raw, "orders.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT order_id, amount FROM {table['qualified']} ORDER BY order_id")
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(amount) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"order_id": "12345678901234567890", "amount": 10.5},
+        {"order_id": "12345678901234567891", "amount": 20.0},
+    ]
+    assert total == 30.5
+
+
+def test_chat_query_preserves_leading_zero_zip_codes(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = b"zip,revenue\n02101,100\n02102,200\n"
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("zips.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "zip-leading-zero-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("zip", "revenue"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    zips = {row["zip"] for row in chat.json()["rows"]}
+    assert zips == {"02101", "02102"}
+    assert 2101 not in zips and "2101" not in zips
+
+
+def test_chat_query_allows_update_column_name(client: TestClient):
+    """Generated SQL quotes headers; the guard must not treat Update as UPDATE."""
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = b"Update,amount\nA,10\nB,20\n"
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("updates.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "update-column-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("update", "amount"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    labels = {row["update"] for row in chat.json()["rows"]}
+    assert labels == {"A", "B"}
 
 
 def test_excel_upload_rejects_bad_extension(client: TestClient):

@@ -743,7 +743,15 @@ def validate_sql(
     if "\x00" in cleaned:
         raise ValueError("Unsafe SQL detected.")
 
-    words = {w.lower() for w in _WORD_RE.findall(cleaned)}
+    # Skip quoted identifiers and string literals. A column named Update or a
+    # filter status = 'delete' is not DROP/DELETE, but a whole-string word scan
+    # treated them as DDL and made chat 422 on ordinary Excel headers.
+    quoted = _quoted_mask(cleaned)
+    words = {
+        match.group(0).lower()
+        for match in _WORD_RE.finditer(cleaned)
+        if not quoted[match.start()]
+    }
     if any(k in words for k in _FORBIDDEN_KEYWORDS):
         raise ValueError("Unsafe SQL detected.")
     if _FORBIDDEN_FUNCTION_RE.search(_sql_for_function_scan(cleaned)):
