@@ -1,12 +1,18 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_SECRET_KEY = "talkbi-dev-secret-key"
+MIN_SECRET_KEY_LENGTH = 32
+DEMO_SEED_ENVIRONMENTS = {"development", "test"}
+PROTECTED_ENVIRONMENTS = {"staging", "production"}
+
+
 class Settings(BaseSettings):
     app_name: str = "TalkBI API"
     api_version: str = "0.1.0"
     environment: str = "development"  # development | staging | production
     api_prefix: str = "/api"
-    secret_key: str = "talkbi-dev-secret-key"
+    secret_key: str = DEFAULT_SECRET_KEY
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     # 本地默认 SQLite；Docker / 生产通过环境变量 DATABASE_URL 覆盖为 PostgreSQL
@@ -18,6 +24,28 @@ class Settings(BaseSettings):
     sql_echo: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def normalized_environment(self) -> str:
+        return (self.environment or "").strip().lower()
+
+    def should_seed_demo_users(self) -> bool:
+        return self.normalized_environment in DEMO_SEED_ENVIRONMENTS
+
+    def validate_production_safety(self) -> None:
+        if self.normalized_environment not in PROTECTED_ENVIRONMENTS:
+            return
+        key = self.secret_key or ""
+        # Empty/whitespace or the committed default lets anyone forge HS256 JWTs.
+        if not key.strip() or key == DEFAULT_SECRET_KEY:
+            raise RuntimeError(
+                "SECRET_KEY must be set to a non-default value in staging/production."
+            )
+        if len(key) < MIN_SECRET_KEY_LENGTH:
+            raise RuntimeError(
+                "SECRET_KEY must be at least "
+                f"{MIN_SECRET_KEY_LENGTH} characters in staging/production."
+            )
 
 
 settings = Settings()
