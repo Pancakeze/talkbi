@@ -581,6 +581,78 @@ def test_materialize_preserves_leading_zero_identifiers():
     ]
 
 
+def test_materialize_large_ids_with_empty_cells_stay_text():
+    """
+    Integers in (2^53, 2^63) fit signed int64, so the previous coerce path
+    treated them as numbers. Any empty cell makes pd.to_numeric return
+    float64, which cannot represent those ids: 12345678901234567 and
+    12345678901234568 both become 1.2345678901234568e16 and collide.
+    Snowflake/order ids with optional blanks are a normal Excel export.
+    """
+    from sqlalchemy import text
+
+    raw = (
+        b"order_id,amount\n"
+        b"12345678901234567,10.5\n"
+        b",20\n"
+        b"12345678901234568,30\n"
+        b"9007199254740993,40\n"
+    )
+    info = materialize_excel_staging(engine, 504, raw, "snowflake.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(
+                    f"SELECT order_id, amount FROM {table['qualified']} "
+                    "ORDER BY amount"
+                )
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(amount) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"order_id": "12345678901234567", "amount": 10.5},
+        {"order_id": None, "amount": 20.0},
+        {"order_id": "12345678901234568", "amount": 30.0},
+        {"order_id": "9007199254740993", "amount": 40.0},
+    ]
+    assert {row["order_id"] for row in rows if row["order_id"] is not None} == {
+        "12345678901234567",
+        "12345678901234568",
+        "9007199254740993",
+    }
+    assert total == 100.5
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["order_id", "amount"])
+    for order_id, amount in (
+        ("12345678901234567", 10.5),
+        (None, 20),
+        ("12345678901234568", 30),
+    ):
+        ws.append([order_id, amount])
+        if order_id is not None:
+            ws[f"A{ws.max_row}"].number_format = "@"
+    buf = io.BytesIO()
+    wb.save(buf)
+    xinfo = materialize_excel_staging(engine, 505, buf.getvalue(), "snowflake.xlsx")
+    xtable = xinfo["staging"]["tables"][0]
+    with engine.connect() as conn:
+        xrows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT order_id, amount FROM {xtable['qualified']} ORDER BY amount")
+            ).mappings()
+        ]
+    assert [row["order_id"] for row in xrows] == [
+        "12345678901234567",
+        None,
+        "12345678901234568",
+    ]
+
+
 def test_materialize_large_uint64_ids_do_not_crash_upload():
     """
     Integers in (2^63, 2^64) become pandas uint64. SQLAlchemy to_sql then
@@ -605,6 +677,49 @@ def test_materialize_large_uint64_ids_do_not_crash_upload():
         {"order_id": "12345678901234567891", "amount": 20.0},
     ]
     assert total == 30.5
+
+
+def test_chat_query_preserves_large_ids_with_empty_cells(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = b"order_id,revenue\n12345678901234567,100\n,50\n12345678901234568,200\n"
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("snowflake-ids.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "snowflake-id-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("order_id", "revenue"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    ids = {row["order_id"] for row in chat.json()["rows"]}
+    assert "12345678901234567" in ids
+    assert "12345678901234568" in ids
+    assert 12345678901234567 not in ids
+    assert 1.2345678901234568e16 not in ids
 
 
 def test_chat_query_preserves_leading_zero_zip_codes(client: TestClient):

@@ -27,10 +27,12 @@ _PANDAS_READ_KWARGS = {
     "dtype": str,
 }
 # Plain decimal tokens only. Leading zeros, scientific notation, and integers
-# outside signed int64 stay text so identifiers are not rewritten or crash to_sql.
+# that cannot round-trip through float64 stay text so identifiers are not rewritten.
 _SIMPLE_NUMBER_RE = re.compile(r"^-?(?:0|[1-9]\d*)(?:\.\d+)?$")
-_INT64_MIN = -(2**63)
-_INT64_MAX = 2**63 - 1
+# pd.to_numeric promotes a column to float64 whenever any cell is NA. Integers
+# outside the IEEE-754 53-bit range (2^53) then round, so distinct snowflake /
+# order ids collide. JSON/JS Number has the same limit.
+_FLOAT64_SAFE_INT_MAX = 2**53
 
 
 def _sanitize_token(raw: str, fallback: str = "col") -> str:
@@ -81,7 +83,7 @@ def _is_safe_numeric_token(value: object) -> bool:
     if isinstance(value, bool):
         return False
     if isinstance(value, int):
-        return _INT64_MIN <= value <= _INT64_MAX
+        return abs(value) <= _FLOAT64_SAFE_INT_MAX
     if isinstance(value, float):
         return True
     token = str(value).strip()
@@ -93,11 +95,15 @@ def _is_safe_numeric_token(value: object) -> bool:
         parsed = int(token)
     except ValueError:
         return False
-    return _INT64_MIN <= parsed <= _INT64_MAX
+    return abs(parsed) <= _FLOAT64_SAFE_INT_MAX
 
 
 def _coerce_safe_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert columns that are lossless numbers; leave identifier-like text alone."""
+    """Convert columns that are lossless numbers; leave identifier-like text alone.
+
+    Integer identifiers wider than 53 bits must stay text: empty cells make
+    pandas use float64, which cannot represent those values exactly.
+    """
     out = df.copy()
     for col in out.columns:
         series = out[col]
