@@ -76,6 +76,21 @@ def _is_missing_cell(value: object) -> bool:
         return False
 
 
+def _integer_magnitude_is_float64_safe(token: str) -> bool:
+    """False when the integer part cannot round-trip through float64.
+
+    Tokens such as 12345678901234567.0 are still integers. Skipping the
+    53-bit check just because a decimal point is present lets pd.to_numeric
+    collapse distinct snowflake / order ids once any cell is empty.
+    """
+    body = token[1:] if token.startswith("-") else token
+    integer_part, _, _frac = body.partition(".")
+    try:
+        return int(integer_part) <= _FLOAT64_SAFE_INT_MAX
+    except ValueError:
+        return False
+
+
 def _is_safe_numeric_token(value: object) -> bool:
     """True if value can become a SQL number without rewriting an identifier."""
     if _is_missing_cell(value):
@@ -89,13 +104,7 @@ def _is_safe_numeric_token(value: object) -> bool:
     token = str(value).strip()
     if not _SIMPLE_NUMBER_RE.match(token):
         return False
-    if "." in token:
-        return True
-    try:
-        parsed = int(token)
-    except ValueError:
-        return False
-    return abs(parsed) <= _FLOAT64_SAFE_INT_MAX
+    return _integer_magnitude_is_float64_safe(token)
 
 
 def _coerce_safe_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
