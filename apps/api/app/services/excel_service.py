@@ -158,13 +158,18 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     """
     name = (filename or "upload").lower()
     if name.endswith(".csv"):
-        df = pd.read_csv(
-            io.BytesIO(file_bytes),
-            nrows=MAX_ROWS_PER_SHEET,
-            **_PANDAS_READ_KWARGS,
-        )
+        try:
+            df = pd.read_csv(
+                io.BytesIO(file_bytes),
+                nrows=MAX_ROWS_PER_SHEET,
+                **_PANDAS_READ_KWARGS,
+            )
+        except pd.errors.EmptyDataError as exc:
+            raise ValueError("No data found in workbook.") from exc
         df = _sanitize_dataframe_columns(df)
         df = _coerce_safe_numeric_columns(df)
+        if len(df.columns) == 0:
+            raise ValueError("No data found in workbook.")
         slug = _sanitize_token(Path(filename or "data").stem, "sheet")
         return {slug: ((filename or "data").rsplit(".", 1)[0], df)}
 
@@ -172,11 +177,18 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     occupied: set[str] = set()
     result: dict[str, tuple[str, pd.DataFrame]] = {}
     for sheet in excel.sheet_names:
-        slug = _unique_sql_ident(_sanitize_token(sheet, "sheet"), occupied)
         df = excel.parse(sheet, nrows=MAX_ROWS_PER_SHEET, **_PANDAS_READ_KWARGS)
         df = _sanitize_dataframe_columns(df)
         df = _coerce_safe_numeric_columns(df)
+        # Excel often ships unused empty sheets (Sheet2/Sheet3). pandas gives
+        # those a 0-column frame; to_sql then emits `CREATE TABLE t ()` which
+        # is invalid SQL and rolls back every sheet in the upload transaction.
+        if len(df.columns) == 0:
+            continue
+        slug = _unique_sql_ident(_sanitize_token(sheet, "sheet"), occupied)
         result[slug] = (sheet, df)
+    if not result:
+        raise ValueError("No data found in workbook.")
     return result
 
 
@@ -210,7 +222,7 @@ def materialize_excel_staging(
 
     sheets = _load_sheet_dataframes(file_bytes, filename)
     if not sheets:
-        raise ValueError("No sheets found in workbook.")
+        raise ValueError("No data found in workbook.")
 
     dialect = engine.dialect.name
     table_prefix = f"ds_{data_source_id}_"

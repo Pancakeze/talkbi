@@ -53,6 +53,104 @@ def test_excel_upload_creates_staging_tables(client: TestClient):
     assert detail.json()["connection_info"]["staging"]["tables"][0]["row_count"] == 2
 
 
+def _xlsx_with_empty_extra_sheets() -> bytes:
+    """Typical Excel workbook: data on Sheet1 plus unused empty Sheet2/Sheet3."""
+    buf = io.BytesIO()
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Sheet1"
+    ws1["A1"] = "district"
+    ws1["B1"] = "amount"
+    ws1["A2"] = "A区"
+    ws1["B2"] = 10.5
+    wb.create_sheet("Sheet2")
+    wb.create_sheet("Sheet3")
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_materialize_skips_empty_excel_sheets():
+    """
+    Empty extra sheets make pandas return a 0-column frame. to_sql then emits
+    `CREATE TABLE t ()`, which is invalid SQL and used to roll back the whole
+    upload — including sheets that already had data.
+    """
+    from sqlalchemy import text
+
+    info = materialize_excel_staging(engine, 701, _xlsx_with_empty_extra_sheets(), "classic.xlsx")
+    tables = info["staging"]["tables"]
+    assert [t["sheet_name"] for t in tables] == ["Sheet1"]
+    assert tables[0]["row_count"] == 1
+    assert [c["name"] for c in tables[0]["columns"]] == ["district", "amount"]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT district, amount FROM {tables[0]['qualified']}")
+            ).mappings()
+        ]
+    assert rows == [{"district": "A区", "amount": 10.5}]
+
+
+def test_excel_upload_skips_empty_extra_sheets(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    files = {
+        "file": (
+            "classic.xlsx",
+            _xlsx_with_empty_extra_sheets(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    r = client.post("/api/data-sources/excel/upload", files=files, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "active"
+    tables = body["connection_info"]["staging"]["tables"]
+    assert [t["sheet_name"] for t in tables] == ["Sheet1"]
+    assert tables[0]["row_count"] == 1
+
+
+def test_excel_upload_rejects_workbook_with_only_empty_sheets(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    buf = io.BytesIO()
+    Workbook().save(buf)
+    files = {
+        "file": (
+            "empty.xlsx",
+            buf.getvalue(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    r = client.post(
+        "/api/data-sources/excel/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "No data found in workbook."
+    listed = client.get("/api/data-sources", headers={"Authorization": f"Bearer {token}"})
+    empty_rows = [ds for ds in listed.json() if ds["name"] == "empty.xlsx"]
+    assert empty_rows
+    assert empty_rows[-1]["status"] == "failed"
+
+
+def test_excel_upload_rejects_empty_csv(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    files = {"file": ("empty.csv", b"", "text/csv")}
+    r = client.post(
+        "/api/data-sources/excel/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "No data found in workbook."
+
+
 def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
