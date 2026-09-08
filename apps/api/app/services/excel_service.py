@@ -13,6 +13,11 @@ STAGING_SCHEMA = "staging"
 # dialect or silently truncated by the server, colliding with a sibling
 # identifier (DuplicateColumn / DuplicateTable / IdentifierError).
 MAX_SQL_IDENT_LEN = 63
+# PostgreSQL max columns per table. SQLite's default SQLITE_MAX_COLUMN is
+# 2000. Excel used-range bloat can produce 16k Unnamed columns, and to_sql
+# then fails with "too many columns" / "tables can have at most 1600
+# columns", rolling back every sheet in the upload transaction.
+MAX_SQL_COLUMNS = 1600
 # pandas' default NA list includes "NA", "NULL", "N/A", "None", "#N/A".
 # Those are real cell values (ISO 3166-1 Namibia, status codes) and must
 # not become SQL NULL. Only truly empty cells are missing values.
@@ -127,6 +132,42 @@ def _coerce_safe_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _is_pandas_unnamed_header(name: object) -> bool:
+    """True for pandas auto-generated missing headers (Unnamed: 0, Unnamed: 12)."""
+    return str(name).strip().lower().startswith("unnamed:")
+
+
+def _series_is_all_missing(series: pd.Series) -> bool:
+    if len(series) == 0:
+        return True
+    return all(_is_missing_cell(value) for value in series.tolist())
+
+
+def _drop_empty_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop pandas Unnamed columns that contain no values.
+
+    A stray Excel cell in a far column (XFD, or even column 2001) expands the
+    used range. pandas then emits thousands of empty Unnamed:* headers.
+    to_sql CREATE TABLE exceeds PostgreSQL's 1600-column / SQLite's 2000-column
+    limit and rolls back the whole upload, including sheets that had real data.
+    """
+    keep_idx: list[int] = []
+    for idx, col in enumerate(df.columns):
+        series = df.iloc[:, idx]
+        if _is_pandas_unnamed_header(col) and _series_is_all_missing(series):
+            continue
+        keep_idx.append(idx)
+    if len(keep_idx) == len(df.columns):
+        return df
+    return df.iloc[:, keep_idx]
+
+
+def _enforce_column_limit(df: pd.DataFrame) -> pd.DataFrame:
+    if len(df.columns) > MAX_SQL_COLUMNS:
+        raise ValueError("Too many columns.")
+    return df
+
+
 def _sanitize_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Assign unique physical column names.
@@ -166,6 +207,8 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
             )
         except pd.errors.EmptyDataError as exc:
             raise ValueError("No data found in workbook.") from exc
+        df = _drop_empty_unnamed_columns(df)
+        df = _enforce_column_limit(df)
         df = _sanitize_dataframe_columns(df)
         df = _coerce_safe_numeric_columns(df)
         if len(df.columns) == 0:
@@ -178,6 +221,9 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     result: dict[str, tuple[str, pd.DataFrame]] = {}
     for sheet in excel.sheet_names:
         df = excel.parse(sheet, nrows=MAX_ROWS_PER_SHEET, **_PANDAS_READ_KWARGS)
+        # Drop empty Unnamed columns before sanitize so used-range bloat
+        # cannot exceed MAX_SQL_COLUMNS at to_sql.
+        df = _drop_empty_unnamed_columns(df)
         df = _sanitize_dataframe_columns(df)
         df = _coerce_safe_numeric_columns(df)
         # Excel often ships unused empty sheets (Sheet2/Sheet3). pandas gives
@@ -185,6 +231,7 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
         # is invalid SQL and rolls back every sheet in the upload transaction.
         if len(df.columns) == 0:
             continue
+        df = _enforce_column_limit(df)
         slug = _unique_sql_ident(_sanitize_token(sheet, "sheet"), occupied)
         result[slug] = (sheet, df)
     if not result:

@@ -151,6 +151,130 @@ def test_excel_upload_rejects_empty_csv(client: TestClient):
     assert r.json()["detail"] == "No data found in workbook."
 
 
+def _xlsx_with_far_stray_column(*, extra_empty_sheet: bool = False) -> bytes:
+    """Workbook whose used range stretches to column 2001 (past SQLite's 2000 cap)."""
+    buf = io.BytesIO()
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Sheet1"
+    ws1["A1"] = "district"
+    ws1["B1"] = "amount"
+    ws1["A2"] = "A区"
+    ws1["B2"] = 10.5
+    ws1.cell(1, 2001, "oops")
+    if extra_empty_sheet:
+        ws2 = wb.create_sheet("Sheet2")
+        ws2.cell(1, 2001, "stray")
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_materialize_drops_empty_unnamed_columns_from_used_range_bloat():
+    """
+    A stray cell in column 2001 expands Excel's used range. pandas then emits
+    ~2000 empty Unnamed columns. to_sql CREATE TABLE exceeds SQLite's default
+    2000-column limit (PostgreSQL: 1600) and used to roll back the upload —
+    including the two real columns that had data.
+    """
+    from sqlalchemy import text
+
+    info = materialize_excel_staging(
+        engine, 801, _xlsx_with_far_stray_column(), "bloated.xlsx"
+    )
+    tables = info["staging"]["tables"]
+    assert [t["sheet_name"] for t in tables] == ["Sheet1"]
+    names = [c["name"] for c in tables[0]["columns"]]
+    assert names == ["district", "amount", "oops"]
+    assert tables[0]["row_count"] == 1
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT district, amount, oops FROM {tables[0]['qualified']}")
+            ).mappings()
+        ]
+    assert rows == [{"district": "A区", "amount": 10.5, "oops": None}]
+
+
+def test_materialize_far_column_on_extra_sheet_does_not_roll_back_data():
+    """Sheet2 used-range bloat must not abort CREATE TABLE for Sheet1."""
+    from sqlalchemy import text
+
+    info = materialize_excel_staging(
+        engine,
+        802,
+        _xlsx_with_far_stray_column(extra_empty_sheet=True),
+        "mixed-bloat.xlsx",
+    )
+    by_sheet = {t["sheet_name"]: t for t in info["staging"]["tables"]}
+    assert "Sheet1" in by_sheet
+    assert [c["name"] for c in by_sheet["Sheet1"]["columns"]] == [
+        "district",
+        "amount",
+        "oops",
+    ]
+    with engine.connect() as conn:
+        rows = list(
+            conn.execute(
+                text(f"SELECT district, amount FROM {by_sheet['Sheet1']['qualified']}")
+            ).mappings()
+        )
+    assert [dict(r) for r in rows] == [{"district": "A区", "amount": 10.5}]
+
+
+def test_materialize_keeps_unnamed_columns_that_have_values():
+    """A missing header over real data must not be dropped as used-range bloat."""
+    from sqlalchemy import text
+
+    buf = io.BytesIO()
+    wb = Workbook()
+    ws = wb.active
+    ws["A1"] = None
+    ws["B1"] = "amount"
+    ws["A2"] = "A区"
+    ws["B2"] = 10.5
+    wb.save(buf)
+    info = materialize_excel_staging(engine, 803, buf.getvalue(), "blank-header.xlsx")
+    names = [c["name"] for c in info["staging"]["tables"][0]["columns"]]
+    assert len(names) == 2
+    assert "amount" in names
+    unnamed = [n for n in names if n != "amount"][0]
+    with engine.connect() as conn:
+        row = (
+            conn.execute(
+                text(
+                    f'SELECT "{unnamed}", amount FROM {info["staging"]["tables"][0]["qualified"]}'
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert dict(row)[unnamed] == "A区"
+    assert dict(row)["amount"] == 10.5
+
+
+def test_excel_upload_survives_used_range_bloat(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    files = {
+        "file": (
+            "bloated.xlsx",
+            _xlsx_with_far_stray_column(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    }
+    r = client.post(
+        "/api/data-sources/excel/upload",
+        files=files,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "active"
+    names = [c["name"] for c in body["connection_info"]["staging"]["tables"][0]["columns"]]
+    assert names == ["district", "amount", "oops"]
+
+
 def test_theme_linked_to_datasource_and_chat_uses_staging(client: TestClient):
     login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
     token = login.json()["access_token"]
