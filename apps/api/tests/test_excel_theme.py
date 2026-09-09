@@ -1,4 +1,5 @@
 import io
+import os
 
 import pandas as pd
 import pytest
@@ -11,8 +12,11 @@ from app.db.session import SessionLocal, engine
 from app.models import DataSource, ThemeField, ThemeLibrary, User
 from app.services.chat_service import run_chat_query
 from app.services.excel_service import (
+    DEFAULT_TO_SQL_CHUNKSIZE,
     MAX_SQL_IDENT_LEN,
+    PG_MAX_BIND_PARAMS,
     _sanitize_dataframe_columns,
+    _to_sql_chunksize,
     materialize_excel_staging,
 )
 
@@ -1168,3 +1172,64 @@ def test_excel_upload_reads_only_limit_plus_one(monkeypatch):
 
     assert exc.value.status_code == 413
     assert FakeUpload.file.read_size == 5
+
+
+def test_to_sql_chunksize_stays_under_postgres_bind_limit():
+    """
+    Production Docker uses postgresql+psycopg. method=multi with chunksize=500
+    sends (rows * cols) binds per INSERT. psycopg then raises
+    OperationalError: number of parameters must be between 0 and 65535,
+    and the upload transaction rolls back.
+    """
+    assert _to_sql_chunksize(50, dialect="postgresql") == DEFAULT_TO_SQL_CHUNKSIZE
+    assert _to_sql_chunksize(50, dialect="sqlite") == DEFAULT_TO_SQL_CHUNKSIZE
+
+    wide = 200
+    chunk = _to_sql_chunksize(wide, dialect="postgresql")
+    assert chunk == 327
+    assert chunk * wide <= PG_MAX_BIND_PARAMS
+    assert (chunk + 1) * wide > PG_MAX_BIND_PARAMS
+
+    # 132 columns * 500 rows = 66000 binds — the smallest typical failure.
+    assert _to_sql_chunksize(132, dialect="postgresql") * 132 <= PG_MAX_BIND_PARAMS
+
+    max_cols = 1600
+    max_chunk = _to_sql_chunksize(max_cols, dialect="postgresql")
+    assert max_chunk == 40
+    assert max_chunk * max_cols <= PG_MAX_BIND_PARAMS
+
+
+def _pg_test_engine():
+    from sqlalchemy import create_engine, text
+
+    url = os.environ.get(
+        "TALKBI_PG_TEST_URL",
+        "postgresql+psycopg://talkbi:talkbi@127.0.0.1:5432/talkbi",
+    )
+    eng = create_engine(url)
+    try:
+        with eng.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        pytest.skip(f"PostgreSQL is not available: {exc}")
+    return eng
+
+
+def test_materialize_wide_csv_survives_postgres_bind_limit():
+    """
+    Concrete (psycopg on PostgreSQL 16, before fix):
+    200-column × 400-row CSV → OperationalError bind overflow, no staging table.
+    """
+    from sqlalchemy import text
+
+    header = ",".join(f"c{i}" for i in range(200))
+    body = "\n".join(",".join("1" for _ in range(200)) for _ in range(400))
+    raw = f"{header}\n{body}".encode()
+    pg = _pg_test_engine()
+    info = materialize_excel_staging(pg, 9101, raw, "wide.csv")
+    table = info["staging"]["tables"][0]
+    assert table["row_count"] == 400
+    assert len(table["columns"]) == 200
+    with pg.connect() as conn:
+        n = conn.execute(text(f"SELECT COUNT(*) FROM {table['qualified']}")).scalar()
+    assert n == 400

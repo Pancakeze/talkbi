@@ -18,6 +18,13 @@ MAX_SQL_IDENT_LEN = 63
 # then fails with "too many columns" / "tables can have at most 1600
 # columns", rolling back every sheet in the upload transaction.
 MAX_SQL_COLUMNS = 1600
+# pandas to_sql(method="multi", chunksize=N) emits one INSERT with N * n_cols
+# bind parameters. PostgreSQL's wire protocol (and psycopg's extended query)
+# caps that at 65535. A default chunk of 500 therefore fails any sheet with
+# >= 132 columns once a chunk is full (200 cols × 400 rows is a typical
+# wide business export) and rolls back the whole upload.
+PG_MAX_BIND_PARAMS = 65_535
+DEFAULT_TO_SQL_CHUNKSIZE = 500
 # pandas' default NA list includes "NA", "NULL", "N/A", "None", "#N/A".
 # Those are real cell values (ISO 3166-1 Namibia, status codes) and must
 # not become SQL NULL. Only truly empty cells are missing values.
@@ -168,6 +175,13 @@ def _enforce_column_limit(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _to_sql_chunksize(n_cols: int, *, dialect: str) -> int:
+    """Return a to_sql chunksize that stays under PostgreSQL's bind cap."""
+    if dialect != "postgresql" or n_cols <= 0:
+        return DEFAULT_TO_SQL_CHUNKSIZE
+    return max(1, min(DEFAULT_TO_SQL_CHUNKSIZE, PG_MAX_BIND_PARAMS // n_cols))
+
+
 def _sanitize_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Assign unique physical column names.
@@ -291,12 +305,12 @@ def materialize_excel_staging(
                     schema=STAGING_SCHEMA,
                     if_exists="replace",
                     index=False,
-                    chunksize=500,
+                    chunksize=_to_sql_chunksize(len(df.columns), dialect=dialect),
                     method="multi",
                 )
             else:
                 qualified = f'"{physical}"'
-                df.to_sql(physical, conn, if_exists="replace", index=False, chunksize=500)
+                df.to_sql(physical, conn, if_exists="replace", index=False, chunksize=DEFAULT_TO_SQL_CHUNKSIZE)
 
             staging_tables.append(
                 {
