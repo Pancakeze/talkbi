@@ -103,6 +103,20 @@ def _integer_magnitude_is_float64_safe(token: str) -> bool:
         return False
 
 
+def _normalize_numeric_cell(value: object) -> object:
+    """Strip unicode whitespace so token checks and pd.to_numeric agree.
+
+    Python str.strip() removes NBSP / NNBSP; pd.to_numeric does not. A cell
+    like '\\xa0100' (common in HTML/Excel copy-paste and SAP CSV exports)
+    was classified as a safe number and then coerced to NaN / SQL NULL.
+    """
+    if _is_missing_cell(value):
+        return value
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    return str(value).strip()
+
+
 def _is_safe_numeric_token(value: object) -> bool:
     """True if value can become a SQL number without rewriting an identifier."""
     if _is_missing_cell(value):
@@ -134,8 +148,17 @@ def _coerce_safe_numeric_columns(df: pd.DataFrame) -> pd.DataFrame:
             if str(series.dtype) == "uint64":
                 out[col] = series.astype(str)
             continue
-        if all(_is_safe_numeric_token(value) for value in series.tolist()):
-            out[col] = pd.to_numeric(series, errors="coerce")
+        normalized = series.map(_normalize_numeric_cell)
+        if all(_is_safe_numeric_token(value) for value in normalized.tolist()):
+            converted = pd.to_numeric(normalized, errors="coerce")
+            # Never turn a present cell into NULL because the parser lagged
+            # the token check (NBSP, future pandas quirks, etc.).
+            if any(
+                (not _is_missing_cell(src)) and _is_missing_cell(dst)
+                for src, dst in zip(normalized.tolist(), converted.tolist())
+            ):
+                continue
+            out[col] = converted
     return out
 
 

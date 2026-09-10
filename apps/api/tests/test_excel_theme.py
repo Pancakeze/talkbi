@@ -644,6 +644,100 @@ def test_materialize_preserves_literal_na_null_strings():
     ]
 
 
+def test_materialize_nbsp_wrapped_amounts_are_not_nulled():
+    """
+    Copy-paste / SAP / HTML CSVs wrap amounts in NBSP (\\u00a0) or NNBSP
+    (\\u202f). The numeric token check strips unicode whitespace, but
+    pd.to_numeric does not, so those cells used to become SQL NULL and SUM
+    silently undercounted.
+    """
+    from sqlalchemy import text
+
+    raw = "label,amount\nA,\u00a0100\nB,200\nC,300\u00a0\nD,\u202f400\n".encode()
+    info = materialize_excel_staging(engine, 910, raw, "nbsp-amounts.csv")
+    table = info["staging"]["tables"][0]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT label, amount FROM {table['qualified']} ORDER BY label")
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(amount) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"label": "A", "amount": 100.0},
+        {"label": "B", "amount": 200.0},
+        {"label": "C", "amount": 300.0},
+        {"label": "D", "amount": 400.0},
+    ]
+    assert total == 1000.0
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["label", "amount"])
+    for label, amount in (("A", "\u00a0100"), ("B", "200"), ("C", "300\u00a0")):
+        ws.append([label, amount])
+        ws[f"B{ws.max_row}"].number_format = "@"
+    buf = io.BytesIO()
+    wb.save(buf)
+    xinfo = materialize_excel_staging(engine, 911, buf.getvalue(), "nbsp-amounts.xlsx")
+    xtable = xinfo["staging"]["tables"][0]
+    with engine.connect() as conn:
+        xrows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT label, amount FROM {xtable['qualified']} ORDER BY label")
+            ).mappings()
+        ]
+        xtotal = conn.execute(text(f"SELECT SUM(amount) AS s FROM {xtable['qualified']}")).scalar()
+    assert xrows == [
+        {"label": "A", "amount": 100.0},
+        {"label": "B", "amount": 200.0},
+        {"label": "C", "amount": 300.0},
+    ]
+    assert xtotal == 600.0
+
+
+def test_excel_upload_preserves_nbsp_wrapped_amounts(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = "label,amount\nA,\u00a0100\nB,200\n".encode()
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("nbsp-amounts.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "nbsp-amount-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("label", "amount"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    by_label = {row["label"]: row["amount"] for row in chat.json()["rows"]}
+    assert by_label == {"A": 100.0, "B": 200.0}
+
+
 def test_materialize_empty_numeric_cells_remain_null():
     """Empty amount cells must still become SQL NULL (not the string '') so SUM works."""
     from sqlalchemy import text
