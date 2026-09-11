@@ -237,9 +237,15 @@ def _load_sheet_dataframes(file_bytes: bytes, filename: str) -> dict[str, tuple[
     name = (filename or "upload").lower()
     if name.endswith(".csv"):
         try:
+            # index_col=False is required: when every data row has one more field
+            # than the header (typical trailing comma, or pandas' "index column"
+            # sniff), read_csv promotes the first column to the DataFrame index.
+            # to_sql(..., index=False) then drops it, shifting remaining values
+            # left and leaving the last column NULL.
             df = pd.read_csv(
                 io.BytesIO(file_bytes),
                 nrows=MAX_ROWS_PER_SHEET,
+                index_col=False,
                 **_PANDAS_READ_KWARGS,
             )
         except pd.errors.EmptyDataError as exc:

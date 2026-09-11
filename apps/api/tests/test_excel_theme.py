@@ -738,6 +738,74 @@ def test_excel_upload_preserves_nbsp_wrapped_amounts(client: TestClient):
     assert by_label == {"A": 100.0, "B": 200.0}
 
 
+def test_materialize_csv_trailing_commas_do_not_shift_columns():
+    """
+    CSV exporters often emit a trailing comma on every data row but not the
+    header (`label,amount\\nA,100,\\n`). pandas then treats the first field as
+    the row index. to_sql(index=False) dropped that index, so labels vanished,
+    amounts landed in the label column, and amount became SQL NULL.
+    """
+    from sqlalchemy import text
+
+    raw = b"label,amount\nA,100,\nB,200,\n"
+    info = materialize_excel_staging(engine, 912, raw, "trailing-commas.csv")
+    table = info["staging"]["tables"][0]
+    assert [c["name"] for c in table["columns"]] == ["label", "amount"]
+    with engine.connect() as conn:
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                text(f"SELECT label, amount FROM {table['qualified']} ORDER BY label")
+            ).mappings()
+        ]
+        total = conn.execute(text(f"SELECT SUM(amount) AS s FROM {table['qualified']}")).scalar()
+    assert rows == [
+        {"label": "A", "amount": 100.0},
+        {"label": "B", "amount": 200.0},
+    ]
+    assert total == 300.0
+
+
+def test_excel_upload_preserves_csv_trailing_comma_columns(client: TestClient):
+    login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    token = login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    raw = b"label,amount\nA,100,\nB,200,\n"
+    up = client.post(
+        "/api/data-sources/excel/upload",
+        files={"file": ("trailing-commas.csv", raw, "text/csv")},
+        headers=headers,
+    )
+    assert up.status_code == 200, up.text
+    ds_id = up.json()["id"]
+    physical = up.json()["connection_info"]["staging"]["tables"][0]["table"]
+
+    theme = client.post(
+        "/api/theme-libraries",
+        json={"name": "trailing-comma-theme", "description": "", "data_source_id": ds_id},
+        headers=headers,
+    )
+    assert theme.status_code == 200, theme.text
+    theme_id = theme.json()["id"]
+    for col in ("label", "amount"):
+        fr = client.post(
+            f"/api/theme-libraries/{theme_id}/fields",
+            json={"table_name": physical, "field_name": col, "alias_zh": col, "visible": True},
+            headers=headers,
+        )
+        assert fr.status_code == 200, fr.text
+
+    chat = client.post(
+        "/api/chat/query",
+        json={"prompt": "查看明细", "theme_ids": [theme_id]},
+        headers=headers,
+    )
+    assert chat.status_code == 200, chat.text
+    by_label = {row["label"]: row["amount"] for row in chat.json()["rows"]}
+    assert by_label == {"A": 100.0, "B": 200.0}
+
+
 def test_materialize_empty_numeric_cells_remain_null():
     """Empty amount cells must still become SQL NULL (not the string '') so SUM works."""
     from sqlalchemy import text
